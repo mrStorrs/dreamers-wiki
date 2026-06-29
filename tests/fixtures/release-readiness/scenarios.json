@@ -1,0 +1,32 @@
+[
+  {
+    "id": "first-run-state",
+    "description": "Wiki metadata is absent and the workflow initializes meta/state.json plus Meta.md after approved push.",
+    "automatedTests": ["tests/state.test.ts", "tests/wiki-edits.test.ts"]
+  },
+  {
+    "id": "normal-commit-range",
+    "description": "Existing lastProcessedCommit is used as the base for changed commits and repository context.",
+    "automatedTests": ["tests/state.test.ts", "tests/context.test.ts"]
+  },
+  {
+    "id": "dirty-wiki-workspace",
+    "description": "Existing wiki workspace has uncommitted changes and workspace preparation stops before mutation.",
+    "automatedTests": ["tests/workspace.test.ts"]
+  },
+  {
+    "id": "missing-wiki-repository",
+    "description": "Wiki clone/fetch fails and the workflow reports recovery guidance without marking initialization complete.",
+    "automatedTests": ["tests/workspace.test.ts"]
+  },
+  {
+    "id": "stale-page-candidates",
+    "description": "Removed source topics become stale candidates that are marked by default and only deleted or renamed after explicit approval.",
+    "automatedTests": ["tests/context.test.ts", "tests/wiki-edits.test.ts"]
+  },
+  {
+    "id": "push-failure",
+    "description": "Push failure leaves page edits local and does not advance visible wiki state.",
+    "automatedTests": ["tests/wiki-edits.test.ts"]
+  }
+]

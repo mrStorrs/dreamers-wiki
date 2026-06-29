@@ -79,8 +79,9 @@ describe("docs, fixtures, and release readiness", () => {
     expect(releaseReadiness).toContain("real GitHub Wiki smoke check requires explicit user approval");
     expect(releaseReadiness).toContain("passed local verification");
     expect(releaseReadiness).toContain("Real GitHub Wiki local diff-review smoke passed");
-    expect(releaseReadiness).toContain("Real GitHub Wiki push smoke was not run");
+    expect(releaseReadiness).toContain("Real GitHub Wiki push smoke passed");
     expect(releaseReadiness).toContain("wiki remote HEAD was unchanged");
+    expect(releaseReadiness).toContain("a80446723ec011f302fc2a2225ea96ec16a3de42");
     expect(releaseReadiness).not.toContain("pending final verification");
   });
 });

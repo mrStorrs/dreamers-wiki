@@ -81,7 +81,7 @@ describe("docs, fixtures, and release readiness", () => {
     expect(releaseReadiness).toContain("Real GitHub Wiki local diff-review smoke passed");
     expect(releaseReadiness).toContain("Real GitHub Wiki push smoke passed");
     expect(releaseReadiness).toContain("wiki remote HEAD was unchanged");
-    expect(releaseReadiness).toContain("a80446723ec011f302fc2a2225ea96ec16a3de42");
+    expect(releaseReadiness).toContain("18 curated project pages");
     expect(releaseReadiness).not.toContain("pending final verification");
   });
 });

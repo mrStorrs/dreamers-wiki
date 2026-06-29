@@ -36,5 +36,5 @@ Use this repo-local skill only from the current repository. Do not install, copy
 
 ## Validation
 
-- Run `npm run typecheck`, `npm test`, and `npm run build` after changing server code, scaffolding, or workflow tests.
+- Run `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build` after changing server code, scaffolding, or workflow tests.
 - For smoke testing, use a temporary local wiki repository unless the user explicitly approves a real wiki push.

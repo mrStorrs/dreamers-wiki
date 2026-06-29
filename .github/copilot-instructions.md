@@ -27,5 +27,5 @@ This repository builds the `dreamers-wiki` TypeScript MCP server and repo-local 
 
 ## Validation
 
-- Run `npm run typecheck`, `npm test`, and `npm run build` for changes to TypeScript, tests, MCP tools, or harness scaffolding.
+- Run `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build` for changes to TypeScript, tests, MCP tools, or harness scaffolding.
 - Prefer temporary local wiki repositories for smoke checks. Do not push a real GitHub Wiki during verification unless the user explicitly approves it.

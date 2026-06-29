@@ -10,6 +10,14 @@ import {
 } from "./context.js";
 import { createCommandRunner } from "./command-runner.js";
 import { projectCommitSchema } from "./git-commits.js";
+import {
+  applyLocalWikiEdits,
+  applyWikiEditsInputSchema,
+  pushWikiChanges,
+  pushWikiChangesInputSchema,
+  reviewWikiDiff,
+  reviewWikiDiffInputSchema
+} from "./wiki-edits.js";
 
 export type McpToolResult = {
   content: Array<{ type: "text"; text: string }>;
@@ -87,6 +95,69 @@ export function registerTools(server: ToolRegistrar, cwd = process.cwd()) {
         commits: parsedInput.repositoryContext.commits,
         changedFiles: parsedInput.repositoryContext.changedFiles,
         pages: parsedInput.wikiContext.pages
+      }));
+    }
+  );
+  server.registerTool(
+    "dreamers_wiki_apply_edits",
+    {
+      description: "Apply approved wiki page content and stale-page actions to the local wiki workspace without pushing.",
+      inputSchema: {
+        wikiPath: applyWikiEditsInputSchema.shape.wikiPath,
+        plan: applyWikiEditsInputSchema.shape.plan,
+        pageContents: applyWikiEditsInputSchema.shape.pageContents,
+        staleActions: applyWikiEditsInputSchema.shape.staleActions
+      }
+    },
+    (input) => {
+      const parsedInput = applyWikiEditsInputSchema.parse(input);
+      return createJsonResponse(applyLocalWikiEdits({
+        wikiPath: parsedInput.wikiPath,
+        plan: parsedInput.plan,
+        ...(parsedInput.pageContents === undefined ? {} : { pageContents: parsedInput.pageContents }),
+        ...(parsedInput.staleActions === undefined ? {} : { staleActions: parsedInput.staleActions })
+      }));
+    }
+  );
+  server.registerTool(
+    "dreamers_wiki_review_diff",
+    {
+      description: "Return a concise local wiki change summary plus Git diff for user review.",
+      inputSchema: {
+        wikiPath: reviewWikiDiffInputSchema.shape.wikiPath
+      }
+    },
+    (input) => {
+      const parsedInput = reviewWikiDiffInputSchema.parse(input);
+      return createJsonResponse(reviewWikiDiff({
+        wikiPath: parsedInput.wikiPath,
+        runner: createCommandRunner()
+      }));
+    }
+  );
+  server.registerTool(
+    "dreamers_wiki_push",
+    {
+      description: "Commit wiki changes, update visible metadata, and push only when explicit approval is present.",
+      inputSchema: {
+        wikiPath: pushWikiChangesInputSchema.shape.wikiPath,
+        repository: pushWikiChangesInputSchema.shape.repository,
+        commitRange: pushWikiChangesInputSchema.shape.commitRange,
+        mcpVersion: pushWikiChangesInputSchema.shape.mcpVersion,
+        approved: pushWikiChangesInputSchema.shape.approved,
+        now: pushWikiChangesInputSchema.shape.now
+      }
+    },
+    (input) => {
+      const parsedInput = pushWikiChangesInputSchema.parse(input);
+      return createJsonResponse(pushWikiChanges({
+        wikiPath: parsedInput.wikiPath,
+        runner: createCommandRunner(),
+        approved: parsedInput.approved,
+        repository: parsedInput.repository,
+        commitRange: parsedInput.commitRange,
+        mcpVersion: parsedInput.mcpVersion,
+        ...(parsedInput.now === undefined ? {} : { now: parsedInput.now })
       }));
     }
   );

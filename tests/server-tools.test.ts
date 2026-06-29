@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createCommandRunner } from "../src/command-runner.js";
 import { createServer } from "../src/server.js";
 import { createStatusResponse, type McpToolResult, registerTools } from "../src/tools.js";
-import { commitFiles, createGitRepository } from "./helpers/git-fixture.js";
+import { commitFiles, createCommittedWorktree, createGitRepository } from "./helpers/git-fixture.js";
 
 describe("MCP tool surface", () => {
   it("defines a minimal introspection tool without real GitHub or wiki operations", () => {
@@ -39,7 +39,10 @@ describe("MCP tool surface", () => {
       "dreamers_wiki_status",
       "dreamers_wiki_repository_context",
       "dreamers_wiki_wiki_context",
-      "dreamers_wiki_plan_updates"
+      "dreamers_wiki_plan_updates",
+      "dreamers_wiki_apply_edits",
+      "dreamers_wiki_review_diff",
+      "dreamers_wiki_push"
     ]);
   });
 
@@ -155,6 +158,74 @@ describe("MCP tool surface", () => {
       }
     }));
   });
+
+  it("returns structured JSON from edit, diff, and no-approval push handlers", async () => {
+    const wikiPath = await createToolWikiCheckoutFixture();
+    const handlers = captureHandlers("/tmp/dreamers-wiki-test");
+    const plan = {
+      pagesToCreate: [],
+      pagesToUpdate: [{
+        path: "Home.md",
+        reason: "Home.md changed.",
+        sourceCommits: ["def456"],
+        suggestedPurpose: "Refresh Home."
+      }],
+      stalePageCandidates: [],
+      commitRange: {
+        from: "abc123",
+        to: "def456"
+      }
+    };
+
+    const applyResponse = await handlers.dreamers_wiki_apply_edits({
+      wikiPath,
+      plan,
+      pageContents: [{
+        path: "Home.md",
+        content: "# Home\n\nEdited through handler.\n"
+      }]
+    });
+    expect(parseToolJson(applyResponse).filesChanged).toEqual(["Home.md"]);
+
+    const reviewResponse = await handlers.dreamers_wiki_review_diff({ wikiPath });
+    expect(parseToolJson(reviewResponse).summary).toContain(" M Home.md");
+
+    const pushResponse = await handlers.dreamers_wiki_push({
+      wikiPath,
+      approved: false,
+      repository: "owner/repo",
+      commitRange: plan.commitRange,
+      mcpVersion: "0.1.0"
+    });
+    expect(parseToolJson(pushResponse)).toMatchObject({
+      status: "approval-required",
+      committed: false,
+      pushed: false,
+      stateAdvanced: false
+    });
+  });
+
+  it("rejects mutating handlers without an explicit wiki path", async () => {
+    const handlers = captureHandlers("/tmp/dreamers-wiki-test");
+    const plan = {
+      pagesToCreate: [],
+      pagesToUpdate: [],
+      stalePageCandidates: [],
+      commitRange: {
+        from: null,
+        to: "def456"
+      }
+    };
+
+    await expectHandlerToReject(() => handlers.dreamers_wiki_apply_edits({ plan }));
+    await expectHandlerToReject(() => handlers.dreamers_wiki_review_diff({}));
+    await expectHandlerToReject(() => handlers.dreamers_wiki_push({
+      approved: false,
+      repository: "owner/repo",
+      commitRange: plan.commitRange,
+      mcpVersion: "0.1.0"
+    }));
+  });
 });
 
 type CapturedHandler = (input: Record<string, unknown>) => Promise<McpToolResult>;
@@ -167,7 +238,12 @@ function captureHandlers(cwd: string) {
     }
   }, cwd);
   return handlers as Record<
-    "dreamers_wiki_repository_context" | "dreamers_wiki_wiki_context" | "dreamers_wiki_plan_updates",
+    | "dreamers_wiki_repository_context"
+    | "dreamers_wiki_wiki_context"
+    | "dreamers_wiki_plan_updates"
+    | "dreamers_wiki_apply_edits"
+    | "dreamers_wiki_review_diff"
+    | "dreamers_wiki_push",
     CapturedHandler
   >;
 }
@@ -194,5 +270,13 @@ async function createToolProjectFixture() {
 async function createToolWikiFixture() {
   const wikiPath = await mkdtemp(path.join(os.tmpdir(), "dreamers-wiki-tool-wiki-"));
   await writeFile(path.join(wikiPath, "Payment.md"), "# Payment\n");
+  return wikiPath;
+}
+
+async function createToolWikiCheckoutFixture() {
+  const wikiPath = await mkdtemp(path.join(os.tmpdir(), "dreamers-wiki-tool-checkout-"));
+  await createCommittedWorktree(wikiPath, {
+    "Home.md": "# Home\n"
+  });
   return wikiPath;
 }

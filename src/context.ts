@@ -58,24 +58,32 @@ export type WikiUpdatePlan = {
   pagesToCreate: WikiPageChange[];
   pagesToUpdate: WikiPageChange[];
   stalePageCandidates: StaleWikiPageCandidate[];
-  commitRange: {
-    from: string | null;
-    to: string;
-  };
+  commitRange: CommitRange;
 };
 
-export type WikiPageChange = {
-  path: string;
-  reason: string;
-  sourceCommits: string[];
-  suggestedPurpose: string;
-};
+export const wikiPageChangeSchema = z.object({
+  path: z.string(),
+  reason: z.string(),
+  sourceCommits: z.array(z.string()),
+  suggestedPurpose: z.string()
+});
 
-export type StaleWikiPageCandidate = {
-  path: string;
-  reason: string;
-  recommendedAction: "mark";
-};
+export type WikiPageChange = z.infer<typeof wikiPageChangeSchema>;
+
+export const staleWikiPageCandidateSchema = z.object({
+  path: z.string(),
+  reason: z.string(),
+  recommendedAction: z.literal("mark")
+});
+
+export type StaleWikiPageCandidate = z.infer<typeof staleWikiPageCandidateSchema>;
+
+export const wikiUpdatePlanSchema = z.object({
+  pagesToCreate: z.array(wikiPageChangeSchema),
+  pagesToUpdate: z.array(wikiPageChangeSchema),
+  stalePageCandidates: z.array(staleWikiPageCandidateSchema),
+  commitRange: commitRangeSchema
+});
 
 export type GatherRepositoryContextOptions = {
   projectPath: string;

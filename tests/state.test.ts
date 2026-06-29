@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createCommandRunner } from "../src/command-runner.js";
+import { commitFiles, createGitRepository, readCommitShas } from "./helpers/git-fixture.js";
 import {
   detectCommitsSinceState,
   loadWikiRunState,
@@ -231,25 +232,13 @@ describe("wiki state and commits", () => {
 });
 
 async function createGitFixture(subjects: string[]) {
-  const projectPath = await mkdtemp(path.join(os.tmpdir(), "dreamers-wiki-commits-"));
-  const runner = createCommandRunner();
-  await runner.run("git", ["init", projectPath]);
-  await runner.run("git", ["config", "user.email", "test@example.com"], { cwd: projectPath });
-  await runner.run("git", ["config", "user.name", "Test User"], { cwd: projectPath });
-  await runner.run("git", ["checkout", "-b", "main"], { cwd: projectPath });
+  const { repoPath } = await createGitRepository("dreamers-wiki-commits-");
 
   for (const subject of subjects) {
-    await writeFile(path.join(projectPath, `${subject}.txt`), `${subject}\n`);
-    await runner.run("git", ["add", `${subject}.txt`], { cwd: projectPath });
-    await runner.run("git", ["commit", "-m", subject], { cwd: projectPath });
+    await commitFiles(repoPath, subject, {
+      [`${subject}.txt`]: `${subject}\n`
+    });
   }
 
-  return projectPath;
-}
-
-async function readCommitShas(projectPath: string) {
-  const result = await createCommandRunner().run("git", ["log", "--reverse", "--format=%H"], {
-    cwd: projectPath
-  });
-  return result.stdout.trim().split(/\r?\n/).filter(Boolean);
+  return repoPath;
 }

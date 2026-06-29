@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import type { CommandRunner } from "./command-runner.js";
+import { readProjectCommits, type ProjectCommit } from "./git-commits.js";
 
 const commitShaSchema = z.string().regex(/^[0-9a-f]{40}$/i, "must be a literal 40-character commit SHA");
 
@@ -17,13 +18,6 @@ export type WikiRunState = z.infer<typeof stateSchema>;
 export type LoadedWikiRunState =
   | { status: "first-run" | "loaded"; state: WikiRunState }
   | { status: "invalid"; state: WikiRunState; error: string };
-
-export type ProjectCommit = {
-  sha: string;
-  subject: string;
-  authorName: string;
-  authoredAt: string;
-};
 
 export type CommitDetectionResult = {
   status: "ok" | "first-run" | "invalid-state" | "missing-base";
@@ -88,7 +82,11 @@ export async function detectCommitsSinceState(options: CommitDetectionOptions): 
       status: "invalid-state",
       from: null,
       to,
-      commits: await readCommits(options.runner, options.projectPath, null),
+      commits: await readProjectCommits({
+        runner: options.runner,
+        projectPath: options.projectPath,
+        from: null
+      }),
       recoveryReason: options.loadedState.error
     };
   }
@@ -98,7 +96,11 @@ export async function detectCommitsSinceState(options: CommitDetectionOptions): 
       status: "first-run",
       from: null,
       to,
-      commits: await readCommits(options.runner, options.projectPath, null)
+      commits: await readProjectCommits({
+        runner: options.runner,
+        projectPath: options.projectPath,
+        from: null
+      })
     };
   }
 
@@ -107,7 +109,11 @@ export async function detectCommitsSinceState(options: CommitDetectionOptions): 
       status: "missing-base",
       from: lastProcessedCommit,
       to,
-      commits: await readCommits(options.runner, options.projectPath, null),
+      commits: await readProjectCommits({
+        runner: options.runner,
+        projectPath: options.projectPath,
+        from: null
+      }),
       recoveryReason: `Last processed commit ${lastProcessedCommit} was not found in the project repository`
     };
   }
@@ -116,7 +122,11 @@ export async function detectCommitsSinceState(options: CommitDetectionOptions): 
     status: "ok",
     from: lastProcessedCommit,
     to,
-    commits: await readCommits(options.runner, options.projectPath, lastProcessedCommit)
+    commits: await readProjectCommits({
+      runner: options.runner,
+      projectPath: options.projectPath,
+      from: lastProcessedCommit
+    })
   };
 }
 
@@ -167,31 +177,6 @@ async function commitExists(runner: CommandRunner, projectPath: string, sha: str
   } catch {
     return false;
   }
-}
-
-async function readCommits(runner: CommandRunner, projectPath: string, from: string | null) {
-  const range = from ? `${from}..HEAD` : "HEAD";
-  const result = await runner.run("git", [
-    "log",
-    "--reverse",
-    "--format=%H%x1f%s%x1f%an%x1f%aI",
-    range
-  ], { cwd: projectPath });
-
-  return result.stdout
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map(parseCommitLine);
-}
-
-function parseCommitLine(line: string): ProjectCommit {
-  const [sha, subject, authorName, authoredAt] = line.split("\u001f");
-  return {
-    sha: sha ?? "",
-    subject: subject ?? "",
-    authorName: authorName ?? "",
-    authoredAt: authoredAt ?? ""
-  };
 }
 
 function renderMetaMarkdown(state: WikiRunState) {

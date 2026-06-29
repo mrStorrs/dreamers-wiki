@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { CommandRunner, CommandResult } from "../src/command-runner.js";
 import { CommandRunnerError, createCommandRunner } from "../src/command-runner.js";
 import type { DreamersWikiConfig } from "../src/config.js";
+import { createCommittedWorktree } from "./helpers/git-fixture.js";
 import {
   WorkspaceError,
   parseGitHubRemote,
@@ -209,7 +210,7 @@ describe("workspace management", () => {
   it("stops before mutation when a real wiki checkout is dirty", async () => {
     const temp = await mkdtemp(path.join(os.tmpdir(), "dreamers-wiki-dirty-real-"));
     const wikiPath = path.join(temp, "workspaces", "dreamers", "wiki", "wiki");
-    await createWorktree(wikiPath);
+    await createCommittedWorktree(wikiPath);
     await writeFile(path.join(wikiPath, "Home.md"), "# Changed\n");
     const env = await createStubbedGhEnv(temp, {
       gitProtocol: "https",
@@ -335,22 +336,11 @@ async function createBareRemote(temp: string, name: string) {
   const sourcePath = path.join(temp, `${name}-source`);
   const barePath = path.join(temp, `${name}.git`);
   const runner = createCommandRunner();
-  await createWorktree(sourcePath);
+  await createCommittedWorktree(sourcePath);
   await runner.run("git", ["init", "--bare", barePath]);
   await runner.run("git", ["remote", "add", "origin", barePath], { cwd: sourcePath });
   await runner.run("git", ["push", "origin", "main"], { cwd: sourcePath });
   return barePath;
-}
-
-async function createWorktree(repoPath: string) {
-  const runner = createCommandRunner();
-  await runner.run("git", ["init", repoPath]);
-  await runner.run("git", ["config", "user.email", "test@example.com"], { cwd: repoPath });
-  await runner.run("git", ["config", "user.name", "Test User"], { cwd: repoPath });
-  await runner.run("git", ["checkout", "-b", "main"], { cwd: repoPath });
-  await writeFile(path.join(repoPath, "Home.md"), "# Home\n");
-  await runner.run("git", ["add", "Home.md"], { cwd: repoPath });
-  await runner.run("git", ["commit", "-m", "initial"], { cwd: repoPath });
 }
 
 async function createStubbedGhEnv(

@@ -1,4 +1,5 @@
 .dreamers/
+.dreamers-wiki/
 
 node_modules/
 dist/

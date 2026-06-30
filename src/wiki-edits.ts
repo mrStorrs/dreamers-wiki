@@ -12,6 +12,8 @@ import {
 } from "./context.js";
 import { writeWikiMetadata, type WikiRunState } from "./state.js";
 
+const literalCommitShaPattern = /^[0-9a-f]{40}$/i;
+
 export const wikiPageContentSchema = z.object({
   path: z.string(),
   content: z.string()
@@ -182,9 +184,10 @@ export async function pushWikiChanges(options: {
     };
   }
 
+  const lastProcessedCommit = requireLiteralCommitSha(options.commitRange.to, "commitRange.to");
   const state: WikiRunState = {
     repository: options.repository,
-    lastProcessedCommit: options.commitRange.to,
+    lastProcessedCommit,
     lastRunAt: options.now ?? new Date().toISOString(),
     mcpVersion: options.mcpVersion
   };
@@ -342,12 +345,26 @@ function parseStatusEntries(statusOutput: string) {
   for (let index = 0; index < fields.length; index += 1) {
     const field = fields[index] ?? "";
     const status = field.slice(0, 2);
-    entries.push({ status, path: field.slice(3) });
     if (status.startsWith("R") || status.startsWith("C")) {
+      const destinationPath = field.slice(3);
+      const sourcePath = fields[index + 1];
+      entries.push({
+        status,
+        path: sourcePath ? `${sourcePath} -> ${destinationPath}` : destinationPath
+      });
       index += 1;
+      continue;
     }
+    entries.push({ status, path: field.slice(3) });
   }
   return entries;
+}
+
+function requireLiteralCommitSha(value: string, field: string) {
+  if (!literalCommitShaPattern.test(value)) {
+    throw new WikiEditError(`${field} must be a literal 40-character commit SHA before wiki state can advance.`);
+  }
+  return value;
 }
 
 function renderNewPage(change: WikiPageChange) {

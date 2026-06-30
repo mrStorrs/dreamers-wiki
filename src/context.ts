@@ -136,20 +136,24 @@ const emptyTreeSha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
 export async function gatherRepositoryContext(options: GatherRepositoryContextOptions): Promise<RepositoryContext> {
   const limits = { ...defaultLimits, ...options.limits };
+  const commitRange = {
+    from: options.commitRange.from,
+    to: await resolveCommitSha(options.runner, options.projectPath, options.commitRange.to)
+  };
   const commits = await readProjectCommits({
     runner: options.runner,
     projectPath: options.projectPath,
-    from: options.commitRange.from,
-    to: options.commitRange.to
+    from: commitRange.from,
+    to: commitRange.to
   });
-  const changedFiles = await readChangedFiles(options.runner, options.projectPath, options.commitRange);
+  const changedFiles = await readChangedFiles(options.runner, options.projectPath, commitRange);
   const limitedChangedFiles = changedFiles.slice(0, limits.maxFiles);
 
   return {
-    commitRange: options.commitRange,
+    commitRange,
     commits,
     changedFiles: limitedChangedFiles,
-    diffSummaries: await readDiffSummaries(options.runner, options.projectPath, options.commitRange, limitedChangedFiles, limits),
+    diffSummaries: await readDiffSummaries(options.runner, options.projectPath, commitRange, limitedChangedFiles, limits),
     selectedFiles: await readSelectedFiles(options.projectPath, limitedChangedFiles, limits)
   };
 }
@@ -225,6 +229,11 @@ export function planWikiUpdates(options: PlanWikiUpdatesOptions): WikiUpdatePlan
     stalePageCandidates: uniqueStaleCandidates(stalePageCandidates),
     commitRange: options.commitRange
   };
+}
+
+async function resolveCommitSha(runner: CommandRunner, projectPath: string, ref: string) {
+  const result = await runner.run("git", ["rev-parse", "--verify", `${ref}^{commit}`], { cwd: projectPath });
+  return result.stdout.trim();
 }
 
 async function readChangedFiles(

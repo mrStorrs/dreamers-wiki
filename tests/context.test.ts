@@ -41,6 +41,25 @@ describe("context gathering and wiki planning", () => {
     ]));
   });
 
+  it("normalizes symbolic target refs to literal commit SHAs", async () => {
+    const projectPath = await createProjectFixture();
+    const runner = createCommandRunner();
+    const commits = await runner.run("git", ["log", "--reverse", "--format=%H"], { cwd: projectPath });
+    const [firstCommit, secondCommit] = commits.stdout.trim().split(/\r?\n/);
+
+    const context = await gatherRepositoryContext({
+      projectPath,
+      runner,
+      commitRange: {
+        from: firstCommit ?? null,
+        to: "HEAD"
+      }
+    });
+
+    expect(context.commitRange.to).toBe(secondCommit);
+    expect(context.commitRange.to).toMatch(/^[0-9a-f]{40}$/);
+  });
+
   it("gathers the full selected range when no base commit exists", async () => {
     const projectPath = await createProjectFixture();
     const runner = createCommandRunner();

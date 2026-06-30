@@ -10,6 +10,9 @@ import {
 } from "../src/wiki-edits.js";
 import { createCommittedWorktree } from "./helpers/git-fixture.js";
 
+const baseCommitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const headCommitSha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
 describe("wiki edit application, diff review, and push", () => {
   it("creates and updates local wiki Markdown files without pushing", async () => {
     const wikiPath = await createLocalWikiFixture({
@@ -65,6 +68,21 @@ describe("wiki edit application, diff review, and push", () => {
     expect(review.diff).toContain("+Created locally with spaces.");
   });
 
+  it("returns both source and destination paths for renamed pages", async () => {
+    const wikiPath = await createLocalWikiFixture({
+      "Old.md": "# Old\n"
+    });
+    const runner = createCommandRunner();
+    await runner.run("git", ["mv", "Old.md", "New.md"], { cwd: wikiPath });
+
+    const review = await reviewWikiDiff({
+      wikiPath,
+      runner
+    });
+
+    expect(review.summary).toContain("R  Old.md -> New.md");
+  });
+
   it("does not commit or push local edits without explicit approval", async () => {
     const { wikiPath } = await createRemoteWikiFixture();
     await applyLocalWikiEdits({
@@ -105,7 +123,7 @@ describe("wiki edit application, diff review, and push", () => {
       runner: createCommandRunner(),
       approved: true,
       repository: "owner/repo",
-      commitRange: { from: "abc123", to: "def456" },
+      commitRange: { from: baseCommitSha, to: headCommitSha },
       mcpVersion: "0.1.0",
       now: "2026-06-29T00:00:00.000Z"
     });
@@ -121,8 +139,30 @@ describe("wiki edit application, diff review, and push", () => {
       "show",
       "main:meta/state.json"
     ]);
-    expect(remoteState.stdout).toContain("\"lastProcessedCommit\": \"def456\"");
+    expect(remoteState.stdout).toContain(`"lastProcessedCommit": "${headCommitSha}"`);
     expect(remoteState.stdout).toContain("\"repository\": \"owner/repo\"");
+  });
+
+  it("rejects approved pushes when the processed commit is not a literal SHA", async () => {
+    const { wikiPath } = await createRemoteWikiFixture();
+    await applyLocalWikiEdits({
+      wikiPath,
+      plan: fixturePlan({ pagesToUpdate: ["Home.md"] }),
+      pageContents: [{ path: "Home.md", content: "# Home\n\nInvalid commit.\n" }]
+    });
+
+    await expect(pushWikiChanges({
+      wikiPath,
+      runner: createCommandRunner(),
+      approved: true,
+      repository: "owner/repo",
+      commitRange: { from: null, to: "HEAD" },
+      mcpVersion: "0.1.0"
+    })).rejects.toThrow(/literal 40-character commit SHA/);
+
+    await expect(access(path.join(wikiPath, "meta", "state.json"))).rejects.toThrow();
+    const log = await createCommandRunner().run("git", ["log", "--oneline"], { cwd: wikiPath });
+    expect(log.stdout.trim().split(/\r?\n/)).toHaveLength(1);
   });
 
   it("marks stale pages by default without deleting them", async () => {
@@ -225,7 +265,7 @@ describe("wiki edit application, diff review, and push", () => {
       runner: createCommandRunner(),
       approved: true,
       repository: "owner/repo",
-      commitRange: { from: "abc123", to: "def456" },
+      commitRange: { from: baseCommitSha, to: headCommitSha },
       mcpVersion: "0.1.0",
       now: "2026-06-29T00:00:00.000Z"
     });
@@ -284,8 +324,8 @@ function fixturePlan(options: {
       recommendedAction: "mark" as const
     })),
     commitRange: {
-      from: "abc123",
-      to: "def456"
+      from: baseCommitSha,
+      to: headCommitSha
     }
   };
 }
@@ -294,7 +334,7 @@ function pageChange(pagePath: string) {
   return {
     path: pagePath,
     reason: `${pagePath} changed.`,
-    sourceCommits: ["def456"],
+    sourceCommits: [headCommitSha],
     suggestedPurpose: `Document ${pagePath}.`
   };
 }

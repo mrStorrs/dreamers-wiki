@@ -22,16 +22,16 @@ describe("loadConfig", () => {
       cwd: "/repo",
       readFile: async () => JSON.stringify({
         workspaceRoot: ".cache/wiki",
-      commandTimeoutMs: 1000,
-    })
-  });
+        commandTimeoutMs: 1000
+      })
+    });
 
-  expect(config).toMatchObject({
-    workspaceRoot: "/repo/.cache/wiki",
-    githubHost: "github.com",
-    commandTimeoutMs: 1000
+    expect(config).toMatchObject({
+      workspaceRoot: "/repo/.cache/wiki",
+      githubHost: "github.com",
+      commandTimeoutMs: 1000
+    });
   });
-});
 
   it("rejects invalid overrides with actionable errors", async () => {
     await expect(loadConfig({

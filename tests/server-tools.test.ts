@@ -85,14 +85,18 @@ describe("MCP tool surface", () => {
       to: head
     });
     const repositoryContext = parseToolJson(repositoryResponse);
-    expect(repositoryContext.changedFiles.map((file: { path: string }) => file.path)).toContain("src/payment.ts");
+    expect(repositoryContext.changedFiles.map((file: { path: string }) => file.path)).toContain("src/tools.ts");
+    expect(repositoryContext.diffSummaries.find((summary: { path: string }) => summary.path === "src/tools.ts")?.diff)
+      .toContain("registerTools");
+    expect(repositoryContext.selectedFiles.find((file: { path: string }) => file.path === "src/tools.ts")?.content)
+      .toContain("registerTools");
 
     const wikiResponse = await handlers.dreamers_wiki_wiki_context({
       wikiPath,
       changedFiles: repositoryContext.changedFiles
     });
     const wikiContext = parseToolJson(wikiResponse);
-    expect(wikiContext.pages.map((page: { path: string }) => page.path)).toContain("Payment.md");
+    expect(wikiContext.pages.map((page: { path: string }) => page.path)).toContain("MCP-Tool-Reference.md");
 
     const planResponse = await handlers.dreamers_wiki_plan_updates({
       repositoryContext,
@@ -100,9 +104,20 @@ describe("MCP tool surface", () => {
     });
     const plan = parseToolJson(planResponse);
     expect(plan.pagesToUpdate).toEqual([expect.objectContaining({
-      path: "Payment.md"
+      path: "MCP-Tool-Reference.md",
+      sourceFiles: ["src/tools.ts"],
+      contentRequirements: expect.arrayContaining([
+        expect.stringContaining("diff context"),
+        expect.stringContaining("current file context")
+      ]),
+      sourceEvidence: expect.arrayContaining([
+        expect.stringContaining("diff context for src/tools.ts"),
+        expect.stringContaining("current file context for src/tools.ts"),
+        expect.stringContaining("registerTools")
+      ])
     })]);
     expect(plan.pagesToCreate).toEqual([]);
+    expect(plan.unroutedChanges).toEqual([]);
   });
 
   it("rejects malformed nested planning and context payloads", async () => {
@@ -261,15 +276,15 @@ async function createToolProjectFixture() {
   await commitFiles(repoPath, "initial", {
     "README.md": "# Tool Project\n"
   });
-  await commitFiles(repoPath, "payment", {
-    "src/payment.ts": "export const payment = true;\n"
+  await commitFiles(repoPath, "tools", {
+    "src/tools.ts": "export function registerTools() { return true; }\n"
   });
   return repoPath;
 }
 
 async function createToolWikiFixture() {
   const wikiPath = await mkdtemp(path.join(os.tmpdir(), "dreamers-wiki-tool-wiki-"));
-  await writeFile(path.join(wikiPath, "Payment.md"), "# Payment\n");
+  await writeFile(path.join(wikiPath, "MCP-Tool-Reference.md"), "# MCP Tool Reference\n\n## Tools\n");
   return wikiPath;
 }
 

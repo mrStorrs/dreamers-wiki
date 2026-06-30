@@ -3,6 +3,12 @@ import path from "node:path";
 import { z } from "zod";
 import type { CommandRunner } from "./command-runner.js";
 import { readProjectCommits, type ProjectCommit } from "./git-commits.js";
+import {
+  isFileMirrorPageName,
+  pageForRouteAlias,
+  routeForPath,
+  type TopicRoute
+} from "./topic-routes.js";
 
 export const changedFileSchema = z.object({
   path: z.string(),
@@ -22,23 +28,30 @@ export type CommitRange = z.infer<typeof commitRangeSchema>;
 export const wikiPageSummarySchema = z.object({
   path: z.string(),
   title: z.string(),
-  bytes: z.number()
+  bytes: z.number(),
+  headings: z.array(z.string()).optional(),
+  excerpt: z.string().optional(),
+  qualityWarnings: z.array(z.string()).optional()
 });
 
 export type WikiPageSummary = z.infer<typeof wikiPageSummarySchema>;
 
-export type RepositoryFile = {
-  path: string;
-  content: string;
-  bytes: number;
-  truncated: boolean;
-};
+export const repositoryFileSchema = z.object({
+  path: z.string(),
+  content: z.string(),
+  bytes: z.number(),
+  truncated: z.boolean()
+});
 
-export type DiffSummary = {
-  path: string;
-  diff: string;
-  truncated: boolean;
-};
+export type RepositoryFile = z.infer<typeof repositoryFileSchema>;
+
+export const diffSummarySchema = z.object({
+  path: z.string(),
+  diff: z.string(),
+  truncated: z.boolean()
+});
+
+export type DiffSummary = z.infer<typeof diffSummarySchema>;
 
 export type RepositoryContext = {
   commitRange: CommitRange;
@@ -58,17 +71,39 @@ export type WikiUpdatePlan = {
   pagesToCreate: WikiPageChange[];
   pagesToUpdate: WikiPageChange[];
   stalePageCandidates: StaleWikiPageCandidate[];
+  unroutedChanges?: UnroutedWikiChange[];
   commitRange: CommitRange;
 };
+
+export const routingConfidenceSchema = z.enum(["high", "medium", "low"]);
 
 export const wikiPageChangeSchema = z.object({
   path: z.string(),
   reason: z.string(),
   sourceCommits: z.array(z.string()),
-  suggestedPurpose: z.string()
+  suggestedPurpose: z.string(),
+  sourceFiles: z.array(z.string()).optional(),
+  targetSections: z.array(z.string()).optional(),
+  pageIntent: z.string().optional(),
+  contentRequirements: z.array(z.string()).optional(),
+  routingConfidence: routingConfidenceSchema.optional(),
+  sourceEvidence: z.array(z.string()).optional()
 });
 
 export type WikiPageChange = z.infer<typeof wikiPageChangeSchema>;
+
+export const unroutedWikiChangeSchema = z.object({
+  path: z.string(),
+  status: z.string(),
+  previousPath: z.string().optional(),
+  reason: z.string(),
+  sourceFiles: z.array(z.string()),
+  sourceCommits: z.array(z.string()),
+  sourceEvidence: z.array(z.string()),
+  routingConfidence: z.literal("low")
+});
+
+export type UnroutedWikiChange = z.infer<typeof unroutedWikiChangeSchema>;
 
 export const staleWikiPageCandidateSchema = z.object({
   path: z.string(),
@@ -82,6 +117,7 @@ export const wikiUpdatePlanSchema = z.object({
   pagesToCreate: z.array(wikiPageChangeSchema),
   pagesToUpdate: z.array(wikiPageChangeSchema),
   stalePageCandidates: z.array(staleWikiPageCandidateSchema),
+  unroutedChanges: z.array(unroutedWikiChangeSchema).default([]),
   commitRange: commitRangeSchema
 });
 
@@ -101,6 +137,8 @@ export type PlanWikiUpdatesOptions = {
   commitRange: CommitRange;
   commits: ProjectCommit[];
   changedFiles: ChangedFile[];
+  diffSummaries?: DiffSummary[];
+  selectedFiles?: RepositoryFile[];
   pages: WikiPageSummary[];
 };
 
@@ -127,12 +165,12 @@ const repoContextFiles = [
 const planningIgnoredFiles = [
   "README.md",
   "AGENTS.md",
-  "CODEX.md",
-  "package.json",
-  "tsconfig.json"
+  "CODEX.md"
 ];
 
 const emptyTreeSha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const maxWikiExcerptCharacters = 420;
+const maxEvidenceCharacters = 320;
 
 export async function gatherRepositoryContext(options: GatherRepositoryContextOptions): Promise<RepositoryContext> {
   const limits = { ...defaultLimits, ...options.limits };
@@ -183,16 +221,19 @@ export function planWikiUpdates(options: PlanWikiUpdatesOptions): WikiUpdatePlan
   const changedSourceFiles = options.changedFiles.filter((file) => isSourceFile(file.path));
   const sourceCommits = options.commits.map((commit) => commit.sha);
   const pagesByTopic = new Map(options.pages.map((page) => [topicKeyForPath(page.path), page]));
-  const pagesToCreate: WikiPageChange[] = [];
-  const pagesToUpdate: WikiPageChange[] = [];
+  const pagesByPath = new Map(options.pages.map((page) => [page.path, page]));
+  const pagesToCreate = new Map<string, WikiPageChange>();
+  const pagesToUpdate = new Map<string, WikiPageChange>();
   const stalePageCandidates: StaleWikiPageCandidate[] = [];
+  const unroutedChanges: UnroutedWikiChange[] = [];
 
   for (const file of changedSourceFiles) {
-    const topic = topicKeyForPath(file.path);
-    const previousTopic = file.previousPath ? topicKeyForPath(file.previousPath) : null;
+    const route = routeForPath(file.path);
+    const exactTopic = topicKeyForPath(file.path);
+    const previousExactTopic = file.previousPath ? topicKeyForPath(file.previousPath) : null;
 
     if (isDelete(file.status)) {
-      const matchingPage = pagesByTopic.get(topic);
+      const matchingPage = route ? pagesByPath.get(route.path) : pagesByTopic.get(exactTopic);
       if (matchingPage && matchingPage.path !== "Home.md") {
         stalePageCandidates.push({
           path: matchingPage.path,
@@ -203,30 +244,35 @@ export function planWikiUpdates(options: PlanWikiUpdatesOptions): WikiUpdatePlan
       continue;
     }
 
-    const matchingPage = previousTopic && isRename(file.status)
-      ? pagesByTopic.get(previousTopic) ?? pagesByTopic.get(topic)
-      : pagesByTopic.get(topic);
-    if (matchingPage) {
-      pagesToUpdate.push({
-        path: matchingPage.path,
-        reason: `Update ${matchingPage.path} because ${file.path} changed in the selected commit range.`,
-        sourceCommits,
-        suggestedPurpose: `Refresh the existing ${topic} documentation using the current source file and commit context.`
-      });
+    const previousMatchingPage = previousExactTopic && isRename(file.status) ? pagesByTopic.get(previousExactTopic) : undefined;
+    const matchingPage = route
+      ? pagesByPath.get(route.path) ?? pageForRouteAlias(options.pages, route)
+      : previousMatchingPage ?? pagesByTopic.get(exactTopic);
+
+    if (route) {
+      const targetPath = matchingPage?.path ?? route.path;
+      upsertPageChange(matchingPage ? pagesToUpdate : pagesToCreate, targetPath, file, route, sourceCommits, options);
+    } else if (matchingPage) {
+      upsertPageChange(pagesToUpdate, matchingPage.path, file, exactPageRoute(matchingPage.path), sourceCommits, options);
     } else {
-      pagesToCreate.push({
-        path: `${titleCase(topic).replace(/\s+/g, "-")}.md`,
-        reason: `Create documentation because ${file.path} changed without a matching wiki page.`,
+      unroutedChanges.push({
+        path: file.path,
+        status: file.status,
+        ...(file.previousPath === undefined ? {} : { previousPath: file.previousPath }),
+        reason: `${file.path} does not match a known reader-facing wiki topic; route it manually before creating a page.`,
+        sourceFiles: [file.path],
         sourceCommits,
-        suggestedPurpose: `Explain the ${topic} area, key behavior, setup notes, and maintenance considerations.`
+        sourceEvidence: sourceEvidenceForFile(file, options),
+        routingConfidence: "low"
       });
     }
   }
 
   return {
-    pagesToCreate: uniqueChanges(pagesToCreate),
-    pagesToUpdate: uniqueChanges(pagesToUpdate),
+    pagesToCreate: sortByPath([...pagesToCreate.values()]),
+    pagesToUpdate: sortByPath([...pagesToUpdate.values()]),
     stalePageCandidates: uniqueStaleCandidates(stalePageCandidates),
+    unroutedChanges: uniqueUnroutedChanges(unroutedChanges),
     commitRange: options.commitRange
   };
 }
@@ -316,11 +362,16 @@ async function walkMarkdownFiles(root: string, relativeDir = ""): Promise<string
 }
 
 async function summarizeWikiFile(wikiPath: string, relativePath: string): Promise<WikiPageSummary> {
-  const fileStat = await stat(path.join(wikiPath, relativePath));
+  const absolutePath = path.join(wikiPath, relativePath);
+  const fileStat = await stat(absolutePath);
+  const content = await readFile(absolutePath, "utf8");
   return {
     path: relativePath,
     title: titleFromWikiPath(relativePath),
-    bytes: fileStat.size
+    bytes: fileStat.size,
+    headings: headingsFromMarkdown(content),
+    excerpt: excerptFromMarkdown(content),
+    qualityWarnings: qualityWarningsForWikiPage(relativePath, content)
   };
 }
 
@@ -329,7 +380,131 @@ function relatedPages(pages: WikiPageSummary[], changedFiles: ChangedFile[]) {
     topicKeyForPath(file.path),
     ...(file.previousPath ? [topicKeyForPath(file.previousPath)] : [])
   ]));
-  return pages.filter((page) => changedTopics.has(topicKeyForPath(page.path)));
+  const routedPagePaths = new Set(changedFiles.flatMap((file) => [
+    routeForPath(file.path)?.path,
+    ...(file.previousPath ? [routeForPath(file.previousPath)?.path] : [])
+  ].filter((pagePath): pagePath is string => Boolean(pagePath))));
+  return pages.filter((page) => routedPagePaths.has(page.path) || changedTopics.has(topicKeyForPath(page.path)));
+}
+
+function exactPageRoute(pagePath: string): TopicRoute {
+  const topic = titleFromWikiPath(pagePath);
+  return {
+    path: pagePath,
+    aliases: [topic],
+    sourcePatterns: [],
+    targetSections: ["Overview", "Behavior"],
+    pageIntent: `Refresh the existing ${topic} documentation using the current source and commit context.`,
+    contentRequirements: ["Preserve the existing page intent and update only reader-relevant behavior."],
+    routingConfidence: "medium"
+  };
+}
+
+function upsertPageChange(
+  changes: Map<string, WikiPageChange>,
+  pagePath: string,
+  file: ChangedFile,
+  route: TopicRoute,
+  sourceCommits: string[],
+  options: PlanWikiUpdatesOptions
+) {
+  const existing = changes.get(pagePath);
+  const sourceFiles = uniqueStrings([...(existing?.sourceFiles ?? []), file.path]);
+  const contentRequirements = uniqueStrings([
+    ...(existing?.contentRequirements ?? []),
+    ...route.contentRequirements,
+    ...contextRequirementsForFile(file, options)
+  ]);
+  const sourceEvidence = uniqueStrings([
+    ...(existing?.sourceEvidence ?? []),
+    ...sourceEvidenceForFile(file, options)
+  ]);
+
+  changes.set(pagePath, {
+    path: pagePath,
+    reason: `${existing ? "Update" : pageExists(pagePath, options.pages) ? "Update" : "Create"} ${pagePath} because ${sourceFiles.join(", ")} changed in the selected commit range.`,
+    sourceCommits: uniqueStrings([...(existing?.sourceCommits ?? []), ...sourceCommits]),
+    suggestedPurpose: route.pageIntent,
+    sourceFiles,
+    targetSections: uniqueStrings([...(existing?.targetSections ?? []), ...route.targetSections]),
+    pageIntent: route.pageIntent,
+    contentRequirements,
+    routingConfidence: existing?.routingConfidence === "medium" ? "medium" : route.routingConfidence ?? "high",
+    sourceEvidence
+  });
+}
+
+function pageExists(pagePath: string, pages: WikiPageSummary[]) {
+  return pages.some((page) => page.path === pagePath);
+}
+
+function contextRequirementsForFile(file: ChangedFile, options: PlanWikiUpdatesOptions) {
+  const requirements: string[] = [];
+  if (options.diffSummaries?.some((summary) => summary.path === file.path)) {
+    requirements.push(`Use diff context for ${file.path} to describe behavior that changed.`);
+  }
+  if (options.selectedFiles?.some((selectedFile) => selectedFile.path === file.path)) {
+    requirements.push(`Use current file context for ${file.path} to keep examples and failure modes accurate.`);
+  }
+  if (file.previousPath) {
+    requirements.push(`Mention the rename or copy from ${file.previousPath} only when it helps readers understand documentation drift.`);
+  }
+  return requirements;
+}
+
+function sourceEvidenceForFile(file: ChangedFile, options: PlanWikiUpdatesOptions) {
+  const evidence = [`${file.status} ${file.previousPath ? `${file.previousPath} -> ` : ""}${file.path}`];
+  const diffSummary = options.diffSummaries?.find((summary) => summary.path === file.path);
+  if (diffSummary) {
+    evidence.push(`diff context for ${file.path}: ${compactWhitespace(diffSummary.diff, maxEvidenceCharacters)}`);
+  }
+  const selectedFile = options.selectedFiles?.find((repoFile) => repoFile.path === file.path);
+  if (selectedFile) {
+    evidence.push(`current file context for ${file.path}: ${compactWhitespace(selectedFile.content, maxEvidenceCharacters)}`);
+  }
+  return evidence;
+}
+
+function headingsFromMarkdown(content: string) {
+  return content
+    .split(/\r?\n/)
+    .map((line) => line.match(/^(#{1,3})\s+(.+?)\s*#*$/)?.[2]?.trim())
+    .filter((heading): heading is string => Boolean(heading))
+    .slice(0, 8);
+}
+
+function excerptFromMarkdown(content: string) {
+  const excerpt = content
+    .split(/\r?\n/)
+    .filter((line) => !line.trim().startsWith("#"))
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return truncate(excerpt, maxWikiExcerptCharacters);
+}
+
+function qualityWarningsForWikiPage(relativePath: string, content: string) {
+  const warnings: string[] = [];
+  const normalizedContent = normalizeText(content);
+  const isVeryShort = content.trim().length < 80;
+
+  if (/welcome to the .*wiki|welcome to the wiki/.test(normalizedContent)) {
+    warnings.push("default-welcome-content");
+  }
+  if (
+    /\b(placeholder|todo|tbd|raw planner|planner boilerplate)\b/.test(normalizedContent)
+    || (isVeryShort && /\bexplain the [a-z0-9 ]+ area\b/.test(normalizedContent))
+  ) {
+    warnings.push("placeholder-content");
+  }
+  if (isFileMirrorPageName(relativePath)) {
+    warnings.push("file-mirror-page-name");
+  }
+  if (isVeryShort) {
+    warnings.push("too-short");
+  }
+
+  return warnings;
 }
 
 function topicKeyForPath(filePath: string) {
@@ -345,16 +520,17 @@ function normalizeText(value: string) {
     .toLowerCase();
 }
 
-function titleCase(value: string) {
-  return value.replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
 function titleFromWikiPath(filePath: string) {
   return path.basename(filePath, path.extname(filePath)).replace(/-/g, " ");
 }
 
 function isSourceFile(filePath: string) {
-  return /\.(ts|tsx|js|jsx|mjs|cjs|json|md)$/.test(filePath) && !planningIgnoredFiles.includes(filePath);
+  return (
+    /\.(ts|tsx|js|jsx|mjs|cjs|json|md)$/.test(filePath)
+    || filePath === ".gitignore"
+    || filePath === ".env"
+    || filePath === ".env.example"
+  ) && !planningIgnoredFiles.includes(filePath);
 }
 
 function isRename(status: string) {
@@ -366,7 +542,12 @@ function isDelete(status: string) {
 }
 
 function isTextLike(filePath: string) {
-  return /\.(ts|tsx|js|jsx|mjs|cjs|json|md|txt|yml|yaml)$/.test(filePath);
+  return (
+    /\.(ts|tsx|js|jsx|mjs|cjs|json|md|txt|yml|yaml)$/.test(filePath)
+    || filePath === ".gitignore"
+    || filePath === ".env"
+    || filePath === ".env.example"
+  );
 }
 
 function parseChangedFiles(output: string) {
@@ -394,17 +575,6 @@ function parseChangedFiles(output: string) {
   return files.filter((file) => file.path);
 }
 
-function uniqueChanges(changes: WikiPageChange[]) {
-  const seen = new Set<string>();
-  return changes.filter((change) => {
-    if (seen.has(change.path)) {
-      return false;
-    }
-    seen.add(change.path);
-    return true;
-  });
-}
-
 function uniqueStaleCandidates(candidates: StaleWikiPageCandidate[]) {
   const seen = new Set<string>();
   return candidates.filter((candidate) => {
@@ -416,8 +586,27 @@ function uniqueStaleCandidates(candidates: StaleWikiPageCandidate[]) {
   });
 }
 
+function uniqueUnroutedChanges(changes: UnroutedWikiChange[]) {
+  const seen = new Set<string>();
+  return changes.filter((change) => {
+    if (seen.has(change.path)) {
+      return false;
+    }
+    seen.add(change.path);
+    return true;
+  });
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values)];
+}
+
 function sortByPath<T extends { path: string }>(items: T[]) {
   return [...items].sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function compactWhitespace(value: string, maxCharacters: number) {
+  return truncate(value.replace(/\s+/g, " ").trim(), maxCharacters);
 }
 
 function truncate(value: string, maxBytes: number) {

@@ -155,16 +155,47 @@ describe("context gathering and wiki planning", () => {
     expect(context.selectedFiles.map((file) => file.path)).toContain("src/path with spaces.ts");
   });
 
-  it("gathers existing wiki pages, metadata files, and candidates related to changes", async () => {
+  it("gathers existing wiki pages, metadata files, quality warnings, and candidates related to changes", async () => {
     const wikiPath = await createWikiFixture();
     const context = await gatherWikiContext({
       wikiPath,
-      changedFiles: [{ path: "src/feature.ts", status: "M" }]
+      changedFiles: [{ path: "src/context.ts", status: "M" }]
     });
 
-    expect(context.pages.map((page) => page.path)).toEqual(expect.arrayContaining(["Feature.md", "Old-Feature.md"]));
+    expect(context.pages.map((page) => page.path)).toEqual(expect.arrayContaining([
+      "Planning-Model.md",
+      "Scaffolding.Test.md",
+      "Stub.md",
+      "Welcome.md",
+      "Long-Page.md"
+    ]));
     expect(context.metadataFiles.map((file) => file.path)).toEqual(["Meta.md", "meta/state.json"]);
-    expect(context.relatedPages.map((page) => page.path)).toContain("Feature.md");
+    expect(context.relatedPages.map((page) => page.path)).toContain("Planning-Model.md");
+    expect(context.pages.find((page) => page.path === "Planning-Model.md")).toMatchObject({
+      headings: ["Planning Model", "Routing"],
+      excerpt: expect.stringContaining("Reader-facing planning"),
+      qualityWarnings: []
+    });
+    expect(context.pages.find((page) => page.path === "Welcome.md")?.qualityWarnings)
+      .toEqual(expect.arrayContaining(["default-welcome-content"]));
+    expect(context.pages.find((page) => page.path === "Stub.md")?.qualityWarnings)
+      .toEqual(expect.arrayContaining(["placeholder-content", "too-short"]));
+    expect(context.pages.find((page) => page.path === "Scaffolding.Test.md")?.qualityWarnings)
+      .toEqual(expect.arrayContaining(["file-mirror-page-name"]));
+    expect(context.pages.find((page) => page.path === "Long-Page.md")).toMatchObject({
+      headings: [
+        "Long Page",
+        "Section 1",
+        "Section 2",
+        "Section 3",
+        "Section 4",
+        "Section 5",
+        "Section 6",
+        "Section 7"
+      ],
+      qualityWarnings: []
+    });
+    expect(context.pages.find((page) => page.path === "Long-Page.md")?.excerpt?.length).toBeLessThanOrEqual(420);
   });
 
   it("matches related wiki pages through previous paths", async () => {
@@ -181,27 +212,96 @@ describe("context gathering and wiki planning", () => {
     expect(context.relatedPages.map((page) => page.path)).toContain("Feature.md");
   });
 
-  it("proposes a new page for changed code with no matching wiki page", async () => {
-    const plan = planWikiUpdates(minimalPlanningInput([{ path: "src/payment.ts", status: "A" }], []));
+  it("routes representative changes to reader-facing topic pages instead of source-file page names", async () => {
+    const plan = planWikiUpdates(minimalPlanningInput([
+      { path: "src/context.ts", status: "M" },
+      { path: "src/tools.ts", status: "M" },
+      { path: "src/workspace.ts", status: "M" },
+      { path: "src/wiki-edits.ts", status: "M" },
+      { path: "tests/scaffolding.test.ts", status: "M" },
+      { path: "docs/troubleshooting.md", status: "M" },
+      { path: ".codex/skills/dreamers-wiki/SKILL.md", status: "M" },
+      { path: ".github/copilot-instructions.md", status: "M" },
+      { path: "package-lock.json", status: "M" },
+      { path: "tsconfig.build.json", status: "M" }
+    ], []));
 
-    expect(plan.pagesToCreate).toEqual([expect.objectContaining({
-      path: "Payment.md",
-      reason: expect.stringContaining("src/payment.ts"),
-      sourceCommits: ["abc123"],
-      suggestedPurpose: expect.stringContaining("payment")
-    })]);
-    expect(plan.pagesToUpdate).toEqual([]);
+    expect(plan.pagesToCreate.map((change) => change.path)).toEqual(expect.arrayContaining([
+      "Planning-Model.md",
+      "MCP-Tool-Reference.md",
+      "Workspace-Management.md",
+      "Local-Edits-And-Diff-Review.md",
+      "Testing-And-Fixtures.md",
+      "Troubleshooting.md",
+      "Harnesses.md",
+      "Configuration.md"
+    ]));
+    const forbiddenPageNames = [
+      "Context.md",
+      "Tools.md",
+      "Workspace.md",
+      "Wiki-Edits.md",
+      "Scaffolding.Test.md",
+      "Troubleshooting.md.md",
+      "Skill.md",
+      "Copilot-Instructions.md",
+      "Package-Lock.md",
+      "Tsconfig.Build.md"
+    ];
+    const createdPages = plan.pagesToCreate.map((change) => change.path);
+    expect(createdPages.filter((path) => forbiddenPageNames.includes(path))).toEqual([]);
   });
 
-  it("proposes updates when changed code has matching wiki pages", async () => {
-    const plan = planWikiUpdates(minimalPlanningInput([{ path: "src/payment.ts", status: "M" }], ["Payment.md"]));
+  it("records low-confidence changes without fabricating placeholder page names", async () => {
+    const plan = planWikiUpdates(minimalPlanningInput([{ path: "src/payment.ts", status: "A" }], []));
+
+    expect(plan.pagesToCreate).toEqual([]);
+    expect(plan.unroutedChanges).toEqual([expect.objectContaining({
+      path: "src/payment.ts",
+      routingConfidence: "low",
+      sourceFiles: ["src/payment.ts"],
+      sourceCommits: ["abc123"],
+      sourceEvidence: expect.arrayContaining([expect.stringContaining("src/payment.ts")])
+    })]);
+  });
+
+  it("adds source evidence and drafting requirements when changed files map to existing topic pages", async () => {
+    const plan = planWikiUpdates(minimalPlanningInput(
+      [{ path: "src/context.ts", status: "M" }],
+      ["Planning-Model.md"],
+      {
+        diffSummaries: [{
+          path: "src/context.ts",
+          diff: "diff --git a/src/context.ts b/src/context.ts\n+export function planWikiUpdates() {}\n",
+          truncated: false
+        }],
+        selectedFiles: [{
+          path: "src/context.ts",
+          content: "export function planWikiUpdates() { return []; }\n",
+          bytes: 48,
+          truncated: false
+        }]
+      }
+    ));
 
     expect(plan.pagesToUpdate).toEqual([expect.objectContaining({
-      path: "Payment.md",
-      reason: expect.stringContaining("src/payment.ts"),
-      sourceCommits: ["abc123"]
+      path: "Planning-Model.md",
+      sourceFiles: ["src/context.ts"],
+      targetSections: expect.arrayContaining(["Topic routing", "Source evidence"]),
+      pageIntent: expect.stringContaining("planning"),
+      contentRequirements: expect.arrayContaining([
+        expect.stringContaining("diff context"),
+        expect.stringContaining("current file context")
+      ]),
+      routingConfidence: "high",
+      sourceCommits: ["abc123"],
+      sourceEvidence: expect.arrayContaining([
+        expect.stringContaining("src/context.ts"),
+        expect.stringContaining("planWikiUpdates")
+      ])
     })]);
     expect(plan.pagesToCreate).toEqual([]);
+    expect(plan.unroutedChanges).toEqual([]);
   });
 
   it("updates the previous page and keeps rename topics out of stale candidates", async () => {
@@ -221,14 +321,14 @@ describe("context gathering and wiki planning", () => {
 
   it("proposes a new page for copies instead of updating the source page", async () => {
     const plan = planWikiUpdates(minimalPlanningInput([{
-      path: "src/copied.ts",
-      previousPath: "src/template.ts",
+      path: "docs/examples.md",
+      previousPath: "docs/template.md",
       status: "C100"
-    }], ["Template.md"]));
+    }], ["Workflow-Overview.md"]));
 
     expect(plan.pagesToCreate).toEqual([expect.objectContaining({
-      path: "Copied.md",
-      reason: expect.stringContaining("src/copied.ts")
+      path: "Examples.md",
+      reason: expect.stringContaining("docs/examples.md")
     })]);
     expect(plan.pagesToUpdate).toEqual([]);
     expect(plan.stalePageCandidates).toEqual([]);
@@ -251,7 +351,7 @@ describe("context gathering and wiki planning", () => {
   });
 
   it("returns a structured no-op plan when there are no changed source files", async () => {
-    const plan = planWikiUpdates(minimalPlanningInput([{ path: "README.md", status: "M" }], ["Home.md"]));
+    const plan = planWikiUpdates(minimalPlanningInput([{ path: "assets/logo.png", status: "M" }], ["Home.md"]));
 
     expect(plan).toMatchObject({
       pagesToCreate: [],
@@ -315,14 +415,34 @@ async function createCopyFixture() {
 async function createWikiFixture() {
   const wikiPath = await mkdtemp(path.join(os.tmpdir(), "dreamers-wiki-context-wiki-"));
   await mkdir(path.join(wikiPath, "meta"), { recursive: true });
-  await writeFile(path.join(wikiPath, "Feature.md"), "# Feature\n");
-  await writeFile(path.join(wikiPath, "Old-Feature.md"), "# Old Feature\n");
+  await writeFile(
+    path.join(wikiPath, "Planning-Model.md"),
+    "# Planning Model\n\nReader-facing planning explains topic routing.\n\n## Routing\n\nCurated wiki pages collect related repository changes.\n"
+  );
+  await writeFile(path.join(wikiPath, "Feature.md"), "# Feature\n\nLegacy feature page.\n");
+  await writeFile(path.join(wikiPath, "Scaffolding.Test.md"), "# Scaffolding Test\n\nMirrors a test file.\n");
+  await writeFile(path.join(wikiPath, "Stub.md"), "# Stub\n\nExplain the stub area.\n");
+  await writeFile(path.join(wikiPath, "Welcome.md"), "# Welcome\n\nWelcome to the wiki!\n");
+  await writeFile(path.join(wikiPath, "Long-Page.md"), longWikiPageContent());
   await writeFile(path.join(wikiPath, "Meta.md"), "# Meta\n");
   await writeFile(path.join(wikiPath, "meta", "state.json"), "{}\n");
   return wikiPath;
 }
 
-function minimalPlanningInput(changedFiles: Array<{ path: string; status: string; previousPath?: string }>, pages: string[]) {
+function longWikiPageContent() {
+  const sections = Array.from({ length: 10 }, (_, index) => `## Section ${index + 1}\n\nThis section describes maintainer behavior, workflow expectations, validation evidence, and recovery details with enough prose to make the excerpt exceed the configured bound.`)
+    .join("\n\n");
+  return `# Long Page\n\nThis page has enough real body text to test excerpt truncation while staying useful to readers.\n\n${sections}\n`;
+}
+
+function minimalPlanningInput(
+  changedFiles: Array<{ path: string; status: string; previousPath?: string }>,
+  pages: string[],
+  context?: {
+    diffSummaries?: Array<{ path: string; diff: string; truncated: boolean }>;
+    selectedFiles?: Array<{ path: string; content: string; bytes: number; truncated: boolean }>;
+  }
+) {
   return {
     commitRange: {
       from: null,
@@ -335,6 +455,8 @@ function minimalPlanningInput(changedFiles: Array<{ path: string; status: string
       authoredAt: "2026-06-29T00:00:00.000Z"
     }],
     changedFiles,
+    diffSummaries: context?.diffSummaries ?? [],
+    selectedFiles: context?.selectedFiles ?? [],
     pages: pages.map((pagePath) => ({
       path: pagePath,
       title: pagePath.replace(/\.md$/, "").replace(/-/g, " "),

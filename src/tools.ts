@@ -193,18 +193,18 @@ const wikiContextSchema = z.object({
   pages: z.array(wikiPageSummarySchema)
 }).passthrough();
 
-const repositoryContextInputSchema = z.object({
+export const repositoryContextInputSchema = z.object({
   projectPath: z.string().optional(),
   from: z.string().nullable().optional(),
   to: z.string().optional()
 });
 
-const wikiContextInputSchema = z.object({
+export const wikiContextInputSchema = z.object({
   wikiPath: z.string().optional(),
   changedFiles: z.array(changedFileSchema).optional()
 });
 
-const planUpdatesInputSchema = z.object({
+export const planUpdatesInputSchema = z.object({
   repositoryContext: repositoryContextSchema,
   wikiContext: wikiContextSchema
 });

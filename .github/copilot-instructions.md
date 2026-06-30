@@ -12,8 +12,11 @@ This repository builds the `dreamers-wiki` TypeScript MCP server and repo-local 
 - Gather repository context with `dreamers_wiki_repository_context`.
 - Gather wiki page context with `dreamers_wiki_wiki_context`.
 - Plan create, update, and stale-candidate work with `dreamers_wiki_plan_updates`.
-- Apply local wiki content with `dreamers_wiki_apply_edits` using an explicit wiki workspace path.
-- Review local wiki changes with `dreamers_wiki_review_diff` and show the summary plus Git diff to the user.
+- Draft reader-first Markdown for reader-facing topic pages, with complete `pageContents` for every planned create or update.
+- Do not create source-file-derived, file-by-file, or file mirror pages from test, config, lockfile, harness, tool, context, workspace, or implementation filenames.
+- Reject placeholder, fallback, commit-only, and planner-boilerplate prose before applying local edits.
+- Apply local wiki content with `dreamers_wiki_apply_edits` using an explicit wiki workspace path and full `pageContents`.
+- Review local wiki changes with `dreamers_wiki_review_diff` and show the summary, Git diff, and `qualityFindings` for quality review to the user.
 - Stop before pushing unless the user gives explicit approval after reviewing the diff.
 - Push only with `dreamers_wiki_push`, using the explicit wiki workspace path, repository id, processed commit range, and MCP version.
 

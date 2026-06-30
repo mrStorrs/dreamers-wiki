@@ -56,3 +56,25 @@ Recovery:
 - Rerun approval or push manually only after the user approves the final diff.
 
 The workflow does not advance wiki state unless the approved push succeeds.
+
+## Missing Page Contents
+
+Symptom: `dreamers_wiki_apply_edits` rejects the edit payload with a missing `pageContents` message.
+
+Recovery:
+
+- Provide exactly one `pageContents` entry for every planned create or update path.
+- Remove extra entries that are not present in the structured plan.
+- Keep each page as complete Markdown, not a fallback section or commit summary.
+
+Rerun apply only after the payload has full pageContents coverage.
+
+## Quality Findings
+
+Symptom: `dreamers_wiki_review_diff` or `dreamers_wiki_push` reports `qualityFindings`.
+
+Recovery:
+
+- Replace placeholder, fallback, commit-only, raw planner, or source-file-shaped output with reader-facing topic content.
+- Rename file-mirror pages into reader tasks or concepts before approval.
+- Rerun diff review and treat the quality review as blocking until the findings list is empty.

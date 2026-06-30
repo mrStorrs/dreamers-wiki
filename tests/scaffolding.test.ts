@@ -1,20 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
+import {
+  expectWikiRubricCoverage,
+  workflowTools
+} from "./wiki-rubric.js";
 
 const scaffoldFiles = [
   ".codex/skills/dreamers-wiki/SKILL.md",
   ".github/copilot-instructions.md",
   ".github/instructions/dreamers-wiki.instructions.md"
-];
-
-const workflowTools = [
-  "dreamers_wiki_status",
-  "dreamers_wiki_repository_context",
-  "dreamers_wiki_wiki_context",
-  "dreamers_wiki_plan_updates",
-  "dreamers_wiki_apply_edits",
-  "dreamers_wiki_review_diff",
-  "dreamers_wiki_push"
 ];
 
 describe("harness scaffolding", () => {
@@ -39,6 +33,15 @@ describe("harness scaffolding", () => {
     expect(combined).toMatch(/explicit user approval/i);
     expect(combined).toMatch(/delete or rename stale/i);
     expect(combined).toMatch(/Mark or report stale|marked by default/i);
+  });
+
+  it("requires reader-first wiki output quality in both harnesses", async () => {
+    const files = await readScaffoldFiles();
+
+    for (const filePath of scaffoldFiles) {
+      const content = files.get(filePath) ?? "";
+      expectWikiRubricCoverage(content, filePath);
+    }
   });
 
   it("keeps workspace preparation and visible state requirements in both harnesses", async () => {

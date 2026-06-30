@@ -8,7 +8,8 @@
 - Supports local repository mode and explicit `owner/repo` mode.
 - Stores durable wiki state visibly in `meta/state.json` and `Meta.md`.
 - Plans create, update, and stale-candidate wiki work from recent commits and current repository/wiki context.
-- Applies edits to the local wiki checkout and returns `git diff` output for review.
+- Applies complete `pageContents` to the local wiki checkout and returns `git diff` plus `qualityFindings` for review.
+- Enforces a reader-first wiki output rubric: route changes to reader-facing topics, require full pageContents coverage, and reject placeholder, fallback, commit-only, or source-file-shaped pages.
 - Marks stale pages for review by default; delete and rename actions require explicit approval.
 - Does not publish to npm, run on a schedule, or push wiki changes automatically.
 
@@ -48,7 +49,7 @@ Use local mode when Codex or Copilot is already running inside the project repos
    - `dreamers_wiki_review_diff`
    - `dreamers_wiki_push`
 
-5. Review the summary and Git diff returned by `dreamers_wiki_review_diff`.
+5. Review the summary, Git diff, and `qualityFindings` returned by `dreamers_wiki_review_diff`.
 6. If the diff is not approved, stop. Local wiki edits remain in the wiki workspace and no commit or push is performed.
 7. If the diff is approved, call `dreamers_wiki_push` with the explicit wiki workspace path, repository id, commit range, and MCP version.
 
@@ -82,6 +83,12 @@ The wiki stores visible state:
 - `Meta.md` is the human-readable companion page.
 
 Commits since `lastProcessedCommit` guide the plan, while current repository and wiki files provide the truth source. Review always happens locally through `git diff`; GitHub Wiki pushes happen only after approval.
+
+## Reader-First Wiki Output Rubric
+
+Harnesses draft the actual wiki pages, but the server requires a complete page payload before it mutates the wiki. Every planned create or update needs full pageContents coverage. Drafts should explain reader tasks and concepts, not mirror source files one page at a time.
+
+Reject output that reads like a placeholder, fallback update block, commit log, raw plan, or file index. `dreamers_wiki_review_diff` reports `qualityFindings`, and `dreamers_wiki_push` blocks when those findings remain. Plan 03 also keeps an artifact-backed wiki quality fixture and a wipe-and-rebuild smoke path using a temporary local wiki.
 
 ## Validation
 

@@ -197,7 +197,7 @@ describe("MCP tool surface", () => {
       plan,
       pageContents: [{
         path: "Home.md",
-        content: "# Home\n\nEdited through handler.\n"
+        content: "# Home\n\nEdited through the handler with enough maintainer detail to pass deterministic wiki quality checks.\n\n## Details\n\nThis page explains the local edit result, keeps review boundaries clear, and gives readers useful context.\n"
       }]
     });
     expect(parseToolJson(applyResponse).filesChanged).toEqual(["Home.md"]);

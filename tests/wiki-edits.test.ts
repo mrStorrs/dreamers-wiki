@@ -1,4 +1,4 @@
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -26,8 +26,8 @@ describe("wiki edit application, diff review, and push", () => {
         pagesToUpdate: ["Existing.md"]
       }),
       pageContents: [
-        { path: "New-Page.md", content: "# New Page\n\nCreated locally.\n" },
-        { path: "Existing.md", content: "# Existing\n\nUpdated locally.\n" }
+        { path: "New-Page.md", content: goodContent("New Page", "Created locally with enough context for maintainers to understand the new page and review its content safely.") },
+        { path: "Existing.md", content: goodContent("Existing", "Updated locally with enough context for maintainers to understand the changed page and review its content safely.") }
       ]
     });
 
@@ -50,9 +50,9 @@ describe("wiki edit application, diff review, and push", () => {
         pagesToUpdate: ["Existing.md"]
       }),
       pageContents: [
-        { path: "New-Page.md", content: "# New Page\n\nCreated locally.\n" },
-        { path: "New Page.md", content: "# New Page With Spaces\n\nCreated locally with spaces.\n" },
-        { path: "Existing.md", content: "# Existing\n\nUpdated locally.\n" }
+        { path: "New-Page.md", content: goodContent("New Page", "Created locally with enough context for maintainers to understand the new page and review its content safely.") },
+        { path: "New Page.md", content: goodContent("New Page With Spaces", "Created locally with spaces while still providing enough structure for deterministic quality validation.") },
+        { path: "Existing.md", content: goodContent("Existing", "Updated locally with enough context for maintainers to understand the changed page and review its content safely.") }
       ]
     });
 
@@ -63,9 +63,115 @@ describe("wiki edit application, diff review, and push", () => {
 
     expect(review.summary).toEqual(expect.arrayContaining([" M Existing.md", "?? New-Page.md", "?? New Page.md"]));
     expect(review.diff).toContain("diff --git");
-    expect(review.diff).toContain("+Updated locally.");
-    expect(review.diff).toContain("+Created locally.");
-    expect(review.diff).toContain("+Created locally with spaces.");
+    expect(review.diff).toContain("+Updated locally with enough context");
+    expect(review.diff).toContain("+Created locally with enough context");
+    expect(review.diff).toContain("+Created locally with spaces while still providing enough structure");
+  });
+
+  it("rejects missing planned page content before mutating files", async () => {
+    const wikiPath = await createLocalWikiFixture({
+      "Existing.md": "# Existing\n\nOriginal content.\n"
+    });
+
+    await expect(applyLocalWikiEdits({
+      wikiPath,
+      plan: fixturePlan({
+        pagesToCreate: ["New-Page.md"],
+        pagesToUpdate: ["Existing.md"]
+      })
+    })).rejects.toThrow(/Missing page content.*Existing\.md.*New-Page\.md/);
+
+    await expect(access(path.join(wikiPath, "New-Page.md"))).rejects.toThrow();
+    await expect(readFile(path.join(wikiPath, "Existing.md"), "utf8")).resolves.toBe("# Existing\n\nOriginal content.\n");
+  });
+
+  it("rejects invalid page content payloads before mutating files", async () => {
+    const cases = [
+      {
+        name: "duplicate paths",
+        pageContents: [
+          { path: "Home.md", content: goodContent("Home", "First valid version with enough maintainer detail for the wiki quality gate.") },
+          { path: "Home.md", content: goodContent("Home", "Second valid version with enough maintainer detail for the wiki quality gate.") }
+        ],
+        error: /Duplicate page content/
+      },
+      {
+        name: "extra paths",
+        pageContents: [
+          { path: "Home.md", content: goodContent("Home", "Valid planned content with enough maintainer detail for the wiki quality gate.") },
+          { path: "Extra.md", content: goodContent("Extra", "Unexpected content with enough maintainer detail for the wiki quality gate.") }
+        ],
+        error: /not present in the create\/update plan/
+      },
+      {
+        name: "unsafe paths",
+        pageContents: [
+          { path: "Home.md", content: goodContent("Home", "Valid planned content with enough maintainer detail for the wiki quality gate.") },
+          { path: "../Outside.md", content: goodContent("Outside", "Unsafe content with enough maintainer detail for the wiki quality gate.") }
+        ],
+        error: /Unsafe wiki path/
+      },
+      {
+        name: "empty content",
+        pageContents: [
+          { path: "Home.md", content: "" }
+        ],
+        error: /empty content/
+      }
+    ];
+
+    for (const testCase of cases) {
+      const wikiPath = await createLocalWikiFixture({
+        "Home.md": "# Home\n\nOriginal content.\n"
+      });
+      await expect(applyLocalWikiEdits({
+        wikiPath,
+        plan: fixturePlan({ pagesToUpdate: ["Home.md"] }),
+        pageContents: testCase.pageContents
+      }), testCase.name).rejects.toThrow(testCase.error);
+      await expect(readFile(path.join(wikiPath, "Home.md"), "utf8")).resolves.toBe("# Home\n\nOriginal content.\n");
+    }
+  });
+
+  it("rejects placeholder and low-quality page content before mutating files", async () => {
+    const cases = [
+      {
+        name: "placeholder boilerplate",
+        content: "# Home\n\nExplain the home area.\n"
+      },
+      {
+        name: "fallback update block",
+        content: "# Home\n\n## Dreamers Wiki Update\n\nReason: Home changed.\n\nSource commits:\n- bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+      },
+      {
+        name: "raw planner prose",
+        content: "# Home\n\nRaw planner boilerplate should never become a published page.\n\n## Notes\n\nTODO\n"
+      },
+      {
+        name: "too little structure",
+        content: "# Home\n\nShort.\n"
+      },
+      {
+        name: "commit-only content",
+        content: "# Home\n\nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+      },
+      {
+        name: "structured commit-only content",
+        content: "# Home\n\n## Changes\n\n- aaaaaaaa\n- bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n- cccccccccccccccccccccccccccccccccccccccc\n"
+      }
+    ];
+
+    for (const testCase of cases) {
+      const wikiPath = await createLocalWikiFixture({
+        "Home.md": "# Home\n\nOriginal content.\n"
+      });
+      await expect(applyLocalWikiEdits({
+        wikiPath,
+        plan: fixturePlan({ pagesToUpdate: ["Home.md"] }),
+        pageContents: [{ path: "Home.md", content: testCase.content }]
+      }), testCase.name).rejects.toThrow(/quality blocker/);
+      await expect(readFile(path.join(wikiPath, "Home.md"), "utf8")).resolves.toBe("# Home\n\nOriginal content.\n");
+    }
   });
 
   it("returns both source and destination paths for renamed pages", async () => {
@@ -88,7 +194,7 @@ describe("wiki edit application, diff review, and push", () => {
     await applyLocalWikiEdits({
       wikiPath,
       plan: fixturePlan({ pagesToUpdate: ["Home.md"] }),
-      pageContents: [{ path: "Home.md", content: "# Home\n\nPending approval.\n" }]
+      pageContents: [{ path: "Home.md", content: goodContent("Home", "Pending approval but structured enough to prove the no-approval push path preserves existing behavior.") }]
     });
 
     const result = await pushWikiChanges({
@@ -106,7 +212,13 @@ describe("wiki edit application, diff review, and push", () => {
       pushed: false,
       stateAdvanced: false
     });
-    const log = await createCommandRunner().run("git", ["log", "--oneline"], { cwd: wikiPath });
+    await expect(access(path.join(wikiPath, "meta", "state.json"))).rejects.toThrow();
+    await expect(readFile(path.join(wikiPath, "Home.md"), "utf8"))
+      .resolves.toContain("Pending approval but structured enough");
+    const runner = createCommandRunner();
+    const status = await runner.run("git", ["status", "--short"], { cwd: wikiPath });
+    expect(status.stdout).toBe(" M Home.md\n");
+    const log = await runner.run("git", ["log", "--oneline"], { cwd: wikiPath });
     expect(log.stdout.trim().split(/\r?\n/)).toHaveLength(1);
   });
 
@@ -115,7 +227,7 @@ describe("wiki edit application, diff review, and push", () => {
     await applyLocalWikiEdits({
       wikiPath,
       plan: fixturePlan({ pagesToUpdate: ["Home.md"] }),
-      pageContents: [{ path: "Home.md", content: "# Home\n\nApproved update.\n" }]
+      pageContents: [{ path: "Home.md", content: goodContent("Home", "Approved update with enough detail to satisfy the deterministic wiki quality gate before push.") }]
     });
 
     const result = await pushWikiChanges({
@@ -148,7 +260,7 @@ describe("wiki edit application, diff review, and push", () => {
     await applyLocalWikiEdits({
       wikiPath,
       plan: fixturePlan({ pagesToUpdate: ["Home.md"] }),
-      pageContents: [{ path: "Home.md", content: "# Home\n\nInvalid commit.\n" }]
+      pageContents: [{ path: "Home.md", content: goodContent("Home", "Invalid commit range test content that remains valid wiki prose before the push validation fails.") }]
     });
 
     await expect(pushWikiChanges({
@@ -242,7 +354,7 @@ describe("wiki edit application, diff review, and push", () => {
         pagesToUpdate: ["Home.md"],
         stalePageCandidates: ["Review-Me.md"]
       }),
-      pageContents: [{ path: "Home.md", content: "# Home\n\nShould not be written.\n" }],
+      pageContents: [{ path: "Home.md", content: goodContent("Home", "This content should not be written because stale action validation fails before mutation.") }],
       staleActions: [
         { path: "Review-Me.md", action: "rename", newPath: "../Outside.md", approved: true }
       ]
@@ -256,7 +368,7 @@ describe("wiki edit application, diff review, and push", () => {
     await applyLocalWikiEdits({
       wikiPath,
       plan: fixturePlan({ pagesToUpdate: ["Home.md"] }),
-      pageContents: [{ path: "Home.md", content: "# Home\n\nPush will fail.\n" }]
+      pageContents: [{ path: "Home.md", content: goodContent("Home", "Push failure test content that remains valid wiki prose before the remote becomes unavailable.") }]
     });
     await rm(remotePath, { recursive: true, force: true });
 
@@ -286,6 +398,203 @@ describe("wiki edit application, diff review, and push", () => {
     const log = await createCommandRunner().run("git", ["log", "--oneline"], { cwd: wikiPath });
     expect(log.stdout.trim().split(/\r?\n/)).toHaveLength(1);
   });
+
+  it("reports blocking quality findings during diff review", async () => {
+    const wikiPath = await createLocalWikiFixture({
+      "Home.md": goodContent("Home", "Original content with enough detail for a useful wiki page before local edits.")
+    });
+    await writeFile(path.join(wikiPath, "Home.md"), "# Home\n\nExplain the home area.\n");
+
+    const review = await reviewWikiDiff({
+      wikiPath,
+      runner: createCommandRunner()
+    });
+
+    expect(review.summary).toContain(" M Home.md");
+    expect(review.qualityFindings).toEqual([expect.objectContaining({
+      severity: "blocking",
+      path: "Home.md",
+      code: "placeholder-content"
+    })]);
+  });
+
+  it("refuses approved push when changed Markdown has quality blockers", async () => {
+    const { wikiPath } = await createRemoteWikiFixture();
+    const runner = createCommandRunner();
+    await writeFile(path.join(wikiPath, "Home.md"), "# Home\n\nExplain the home area.\n");
+
+    const result = await pushWikiChanges({
+      wikiPath,
+      runner,
+      approved: true,
+      repository: "owner/repo",
+      commitRange: { from: baseCommitSha, to: headCommitSha },
+      mcpVersion: "0.1.0",
+      now: "2026-06-29T00:00:00.000Z"
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      committed: false,
+      pushed: false,
+      stateAdvanced: false
+    });
+    expect(result.recoveryGuidance).toContain("Fix blocking wiki quality findings");
+    expect(result.qualityFindings).toEqual([expect.objectContaining({
+      path: "Home.md",
+      code: "placeholder-content"
+    })]);
+    await expect(access(path.join(wikiPath, "meta", "state.json"))).rejects.toThrow();
+    const log = await runner.run("git", ["log", "--oneline"], { cwd: wikiPath });
+    expect(log.stdout.trim().split(/\r?\n/)).toHaveLength(1);
+  });
+
+  it("rejects approved push from a wiki remote that does not match the requested repository", async () => {
+    const { wikiPath } = await createRemoteWikiFixture({ repository: "owner/repo" });
+    const runner = createCommandRunner();
+    await writeFile(path.join(wikiPath, "Home.md"), goodContent("Home", "Valid changed content that should not be committed because the requested repository does not match origin."));
+
+    const result = await pushWikiChanges({
+      wikiPath,
+      runner,
+      approved: true,
+      repository: "other/repo",
+      commitRange: { from: baseCommitSha, to: headCommitSha },
+      mcpVersion: "0.1.0"
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      committed: false,
+      pushed: false,
+      stateAdvanced: false
+    });
+    expect(result.recoveryGuidance).toContain("wiki remote");
+    await expect(access(path.join(wikiPath, "meta", "state.json"))).rejects.toThrow();
+    const status = await runner.run("git", ["status", "--short"], { cwd: wikiPath });
+    expect(status.stdout).toBe(" M Home.md\n");
+    const log = await runner.run("git", ["log", "--oneline"], { cwd: wikiPath });
+    expect(log.stdout.trim().split(/\r?\n/)).toHaveLength(1);
+  });
+
+  it("rejects approved push for malformed repository names", async () => {
+    const { wikiPath } = await createRemoteWikiFixture({ repository: "owner/repo" });
+    const runner = createCommandRunner();
+    await writeFile(path.join(wikiPath, "Home.md"), goodContent("Home", "Valid changed content that should not be committed because the requested repository name is malformed."));
+
+    await expect(pushWikiChanges({
+      wikiPath,
+      runner,
+      approved: true,
+      repository: "owner/repo/extra",
+      commitRange: { from: baseCommitSha, to: headCommitSha },
+      mcpVersion: "0.1.0"
+    })).rejects.toThrow(/repository must be in owner\/repo form/);
+
+    const status = await runner.run("git", ["status", "--short"], { cwd: wikiPath });
+    expect(status.stdout).toBe(" M Home.md\n");
+  });
+
+  it("rejects approved push when the effective push remote is not a GitHub wiki remote", async () => {
+    const { wikiPath } = await createRemoteWikiFixture({ repository: "owner/repo" });
+    const runner = createCommandRunner();
+    await runner.run("git", ["remote", "set-url", "--push", "origin", "git@github.com:owner/repo.git"], { cwd: wikiPath });
+    await writeFile(path.join(wikiPath, "Home.md"), goodContent("Home", "Valid changed content that should not be committed because the push target is not the repository wiki."));
+
+    const result = await pushWikiChanges({
+      wikiPath,
+      runner,
+      approved: true,
+      repository: "owner/repo",
+      commitRange: { from: baseCommitSha, to: headCommitSha },
+      mcpVersion: "0.1.0"
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      committed: false,
+      pushed: false,
+      stateAdvanced: false
+    });
+    expect(result.recoveryGuidance).toContain("wiki remote");
+    await expect(access(path.join(wikiPath, "meta", "state.json"))).rejects.toThrow();
+    const status = await runner.run("git", ["status", "--short"], { cwd: wikiPath });
+    expect(status.stdout).toBe(" M Home.md\n");
+  });
+
+  it("rejects approved push when the wiki checkout is on an untracked side branch", async () => {
+    const { wikiPath } = await createRemoteWikiFixture({ repository: "owner/repo" });
+    const runner = createCommandRunner();
+    await runner.run("git", ["checkout", "-b", "side-branch"], { cwd: wikiPath });
+    await writeFile(path.join(wikiPath, "Home.md"), goodContent("Home", "Valid changed content that should not be committed because the side branch has no verified wiki upstream."));
+
+    const result = await pushWikiChanges({
+      wikiPath,
+      runner,
+      approved: true,
+      repository: "owner/repo",
+      commitRange: { from: baseCommitSha, to: headCommitSha },
+      mcpVersion: "0.1.0"
+    });
+
+    expect(result).toMatchObject({
+      status: "blocked",
+      committed: false,
+      pushed: false,
+      stateAdvanced: false
+    });
+    expect(result.recoveryGuidance).toContain("track an origin branch");
+    const status = await runner.run("git", ["status", "--short"], { cwd: wikiPath });
+    expect(status.stdout).toBe(" M Home.md\n");
+  });
+
+  it("pushes approved changes to the verified upstream branch even from a local side branch", async () => {
+    const { remotePath, wikiPath } = await createRemoteWikiFixture({ repository: "owner/repo" });
+    const runner = createCommandRunner();
+    await runner.run("git", ["checkout", "-b", "side-branch", "--track", "origin/main"], { cwd: wikiPath });
+    await writeFile(path.join(wikiPath, "Home.md"), goodContent("Home", "Approved side-branch content that should still update the verified upstream wiki branch only."));
+
+    const result = await pushWikiChanges({
+      wikiPath,
+      runner,
+      approved: true,
+      repository: "owner/repo",
+      commitRange: { from: baseCommitSha, to: headCommitSha },
+      mcpVersion: "0.1.0"
+    });
+
+    expect(result).toMatchObject({
+      status: "pushed",
+      committed: true,
+      pushed: true,
+      stateAdvanced: true
+    });
+    const remoteState = await runner.run("git", [
+      `--git-dir=${remotePath}`,
+      "show",
+      "main:meta/state.json"
+    ]);
+    expect(remoteState.stdout).toContain(`"lastProcessedCommit": "${headCommitSha}"`);
+  });
+
+  it("keeps rename summaries while reporting quality findings for renamed Markdown", async () => {
+    const wikiPath = await createLocalWikiFixture({
+      "Old.md": goodContent("Old", "Original content with enough detail before the page is renamed into a file-mirror name.")
+    });
+    const runner = createCommandRunner();
+    await runner.run("git", ["mv", "Old.md", "Scaffolding.Test.md"], { cwd: wikiPath });
+
+    const review = await reviewWikiDiff({
+      wikiPath,
+      runner
+    });
+
+    expect(review.summary).toContain("R  Old.md -> Scaffolding.Test.md");
+    expect(review.qualityFindings).toEqual([expect.objectContaining({
+      path: "Scaffolding.Test.md",
+      code: "file-mirror-page-name"
+    })]);
+  });
 });
 
 async function createLocalWikiFixture(files: Record<string, string>) {
@@ -294,11 +603,12 @@ async function createLocalWikiFixture(files: Record<string, string>) {
   return wikiPath;
 }
 
-async function createRemoteWikiFixture() {
+async function createRemoteWikiFixture(options: { repository?: string } = {}) {
   const temp = await mkdtemp(path.join(os.tmpdir(), "dreamers-wiki-edits-remote-"));
   const seedPath = path.join(temp, "seed");
   const remotePath = path.join(temp, "wiki.git");
   const wikiPath = path.join(temp, "wiki");
+  const repository = options.repository ?? "owner/repo";
   const runner = createCommandRunner();
   await createCommittedWorktree(seedPath, { "Home.md": "# Home\n" });
   await runner.run("git", ["init", "--bare", remotePath]);
@@ -307,6 +617,9 @@ async function createRemoteWikiFixture() {
   await runner.run("git", ["clone", remotePath, wikiPath]);
   await runner.run("git", ["config", "user.email", "test@example.com"], { cwd: wikiPath });
   await runner.run("git", ["config", "user.name", "Test User"], { cwd: wikiPath });
+  await runner.run("git", ["remote", "set-url", "origin", `git@github.com:${repository}.wiki.git`], { cwd: wikiPath });
+  await runner.run("git", ["remote", "set-url", "--push", "origin", `git@github.com:${repository}.wiki.git`], { cwd: wikiPath });
+  await runner.run("git", ["config", `url.${remotePath}.pushInsteadOf`, `git@github.com:${repository}.wiki.git`], { cwd: wikiPath });
   return { remotePath, wikiPath };
 }
 
@@ -337,4 +650,8 @@ function pageChange(pagePath: string) {
     sourceCommits: [headCommitSha],
     suggestedPurpose: `Document ${pagePath}.`
   };
+}
+
+function goodContent(title: string, detail: string) {
+  return `# ${title}\n\n${detail}\n\n## Details\n\nThis page gives maintainers enough concrete context to review the wiki update, understand the behavior, and recover safely if something goes wrong.\n`;
 }

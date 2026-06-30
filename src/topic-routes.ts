@@ -1,4 +1,5 @@
 import path from "node:path";
+import { normalizeText } from "./text.js";
 
 export type TopicRoute = {
   path: string;
@@ -168,32 +169,7 @@ export function pageForRouteAlias(
   return pages.find((page) => aliases.has(topicKeyForPath(page.path)) || aliases.has(normalizeText(page.title)));
 }
 
-export function isFileMirrorPageName(relativePath: string) {
-  const baseName = path.basename(relativePath, path.extname(relativePath));
-  return [
-    /\.test$/i,
-    /\.spec$/i,
-    /^package-lock$/i,
-    /^tsconfig(?:[.-]|$)/i,
-    /^skill$/i,
-    /^copilot-instructions$/i,
-    /^context$/i,
-    /^tools$/i,
-    /^workspace$/i,
-    /^wiki-edits$/i,
-    /^scaffolding\.test$/i
-  ].some((pattern) => pattern.test(baseName));
-}
-
 function topicKeyForPath(filePath: string) {
   const parsed = path.parse(filePath);
   return normalizeText(parsed.name);
-}
-
-function normalizeText(value: string) {
-  return value
-    .replace(/[-_]+/g, " ")
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .trim()
-    .toLowerCase();
 }

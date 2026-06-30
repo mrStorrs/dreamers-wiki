@@ -4,11 +4,12 @@ import { z } from "zod";
 import type { CommandRunner } from "./command-runner.js";
 import { readProjectCommits, type ProjectCommit } from "./git-commits.js";
 import {
-  isFileMirrorPageName,
   pageForRouteAlias,
   routeForPath,
   type TopicRoute
 } from "./topic-routes.js";
+import { normalizeText } from "./text.js";
+import { qualityWarningsForWikiPage } from "./wiki-quality.js";
 
 export const changedFileSchema = z.object({
   path: z.string(),
@@ -172,6 +173,13 @@ const emptyTreeSha = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const maxWikiExcerptCharacters = 420;
 const maxEvidenceCharacters = 320;
 
+type PageChangeDetails = {
+  targetSections: string[];
+  pageIntent: string;
+  contentRequirements: string[];
+  routingConfidence: "high" | "medium";
+};
+
 export async function gatherRepositoryContext(options: GatherRepositoryContextOptions): Promise<RepositoryContext> {
   const limits = { ...defaultLimits, ...options.limits };
   const commitRange = {
@@ -251,9 +259,9 @@ export function planWikiUpdates(options: PlanWikiUpdatesOptions): WikiUpdatePlan
 
     if (route) {
       const targetPath = matchingPage?.path ?? route.path;
-      upsertPageChange(matchingPage ? pagesToUpdate : pagesToCreate, targetPath, file, route, sourceCommits, options);
+      upsertPageChange(matchingPage ? pagesToUpdate : pagesToCreate, targetPath, file, detailsForRoute(route), sourceCommits, options);
     } else if (matchingPage) {
-      upsertPageChange(pagesToUpdate, matchingPage.path, file, exactPageRoute(matchingPage.path), sourceCommits, options);
+      upsertPageChange(pagesToUpdate, matchingPage.path, file, detailsForExistingPage(matchingPage.path), sourceCommits, options);
     } else {
       unroutedChanges.push({
         path: file.path,
@@ -387,24 +395,11 @@ function relatedPages(pages: WikiPageSummary[], changedFiles: ChangedFile[]) {
   return pages.filter((page) => routedPagePaths.has(page.path) || changedTopics.has(topicKeyForPath(page.path)));
 }
 
-function exactPageRoute(pagePath: string): TopicRoute {
-  const topic = titleFromWikiPath(pagePath);
-  return {
-    path: pagePath,
-    aliases: [topic],
-    sourcePatterns: [],
-    targetSections: ["Overview", "Behavior"],
-    pageIntent: `Refresh the existing ${topic} documentation using the current source and commit context.`,
-    contentRequirements: ["Preserve the existing page intent and update only reader-relevant behavior."],
-    routingConfidence: "medium"
-  };
-}
-
 function upsertPageChange(
   changes: Map<string, WikiPageChange>,
   pagePath: string,
   file: ChangedFile,
-  route: TopicRoute,
+  details: PageChangeDetails,
   sourceCommits: string[],
   options: PlanWikiUpdatesOptions
 ) {
@@ -412,7 +407,7 @@ function upsertPageChange(
   const sourceFiles = uniqueStrings([...(existing?.sourceFiles ?? []), file.path]);
   const contentRequirements = uniqueStrings([
     ...(existing?.contentRequirements ?? []),
-    ...route.contentRequirements,
+    ...details.contentRequirements,
     ...contextRequirementsForFile(file, options)
   ]);
   const sourceEvidence = uniqueStrings([
@@ -424,14 +419,33 @@ function upsertPageChange(
     path: pagePath,
     reason: `${existing ? "Update" : pageExists(pagePath, options.pages) ? "Update" : "Create"} ${pagePath} because ${sourceFiles.join(", ")} changed in the selected commit range.`,
     sourceCommits: uniqueStrings([...(existing?.sourceCommits ?? []), ...sourceCommits]),
-    suggestedPurpose: route.pageIntent,
+    suggestedPurpose: details.pageIntent,
     sourceFiles,
-    targetSections: uniqueStrings([...(existing?.targetSections ?? []), ...route.targetSections]),
-    pageIntent: route.pageIntent,
+    targetSections: uniqueStrings([...(existing?.targetSections ?? []), ...details.targetSections]),
+    pageIntent: details.pageIntent,
     contentRequirements,
-    routingConfidence: existing?.routingConfidence === "medium" ? "medium" : route.routingConfidence ?? "high",
+    routingConfidence: existing?.routingConfidence === "medium" ? "medium" : details.routingConfidence,
     sourceEvidence
   });
+}
+
+function detailsForRoute(route: TopicRoute): PageChangeDetails {
+  return {
+    targetSections: route.targetSections,
+    pageIntent: route.pageIntent,
+    contentRequirements: route.contentRequirements,
+    routingConfidence: route.routingConfidence ?? "high"
+  };
+}
+
+function detailsForExistingPage(pagePath: string): PageChangeDetails {
+  const topic = titleFromWikiPath(pagePath);
+  return {
+    targetSections: ["Overview", "Behavior"],
+    pageIntent: `Refresh the existing ${topic} documentation using the current source and commit context.`,
+    contentRequirements: ["Preserve the existing page intent and update only reader-relevant behavior."],
+    routingConfidence: "medium"
+  };
 }
 
 function pageExists(pagePath: string, pages: WikiPageSummary[]) {
@@ -483,41 +497,9 @@ function excerptFromMarkdown(content: string) {
   return truncate(excerpt, maxWikiExcerptCharacters);
 }
 
-function qualityWarningsForWikiPage(relativePath: string, content: string) {
-  const warnings: string[] = [];
-  const normalizedContent = normalizeText(content);
-  const isVeryShort = content.trim().length < 80;
-
-  if (/welcome to the .*wiki|welcome to the wiki/.test(normalizedContent)) {
-    warnings.push("default-welcome-content");
-  }
-  if (
-    /\b(placeholder|todo|tbd|raw planner|planner boilerplate)\b/.test(normalizedContent)
-    || (isVeryShort && /\bexplain the [a-z0-9 ]+ area\b/.test(normalizedContent))
-  ) {
-    warnings.push("placeholder-content");
-  }
-  if (isFileMirrorPageName(relativePath)) {
-    warnings.push("file-mirror-page-name");
-  }
-  if (isVeryShort) {
-    warnings.push("too-short");
-  }
-
-  return warnings;
-}
-
 function topicKeyForPath(filePath: string) {
   const parsed = path.parse(filePath);
   return normalizeText(parsed.name);
-}
-
-function normalizeText(value: string) {
-  return value
-    .replace(/[-_]+/g, " ")
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .trim()
-    .toLowerCase();
 }
 
 function titleFromWikiPath(filePath: string) {

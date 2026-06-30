@@ -1,0 +1,22 @@
+# Navigation
+
+- Use It
+  - [Home](Home)
+  - [Getting Started](Getting-Started)
+  - [Workflow Overview](Workflow-Overview)
+  - [Examples](Examples)
+- Review Safely
+  - [Local Edits And Diff Review](Local-Edits-And-Diff-Review)
+  - [Approval Gated Push](Approval-Gated-Push)
+  - [State And Commit Ranges](State-And-Commit-Ranges)
+- Reference
+  - [MCP Tool Reference](MCP-Tool-Reference)
+  - [Tool Inputs And Outputs](Tool-Inputs-And-Outputs)
+  - [Configuration](Configuration)
+- Maintain
+  - [Maintainer Runbook](Maintainer-Runbook)
+  - [Testing And Fixtures](Testing-And-Fixtures)
+  - [Release Readiness](Release-Readiness)
+- Troubleshoot
+  - [Troubleshooting](Troubleshooting)
+  - [Security And Constraints](Security-And-Constraints)

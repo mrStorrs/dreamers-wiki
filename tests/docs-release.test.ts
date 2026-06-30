@@ -1,7 +1,13 @@
 import { access, readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
+import { applyWikiEditsInputSchema } from "../src/wiki-edits.js";
+import {
+  expectWikiRubricCoverage,
+  firstJsonBlockFrom,
+  sectionForHeading
+} from "./wiki-rubric.js";
 
-describe("docs, fixtures, and release readiness", () => {
+describe("docs and release readiness", () => {
   it("documents local and explicit owner/repo workflow modes without autonomous push", async () => {
     const readme = await readFile("README.md", "utf8");
 
@@ -23,6 +29,9 @@ describe("docs, fixtures, and release readiness", () => {
     expect(examples).toContain("stalePageCandidates");
     expect(examples).toContain("\"approved\": false");
     expect(examples).toContain("\"stateAdvanced\": true");
+
+    const localDiffReview = sectionForHeading(examples, "Local Diff Review");
+    expect(() => applyWikiEditsInputSchema.parse(firstJsonBlockFrom(localDiffReview))).not.toThrow();
   });
 
   it("documents troubleshooting recovery for common failure modes", async () => {
@@ -40,6 +49,19 @@ describe("docs, fixtures, and release readiness", () => {
     expect(troubleshooting).toContain("gh auth login");
     expect(troubleshooting).toContain("WIKI_WORKSPACE_DIRTY");
     expect(troubleshooting).toContain("does not advance wiki state");
+  });
+
+  it("documents the wiki output rubric and artifact-backed quality gates", async () => {
+    const readme = await readFile("README.md", "utf8");
+    const examples = await readFile("docs/examples.md", "utf8");
+    const releaseReadiness = await readFile("docs/release-readiness.md", "utf8");
+    const combined = [readme, examples, releaseReadiness].join("\n");
+
+    expectWikiRubricCoverage(combined, "repository docs");
+    expect(combined).toMatch(/wipe-and-rebuild smoke/i);
+    expect(combined).toMatch(/temporary local wiki/i);
+    expect(combined).toMatch(/artifact-backed wiki quality/i);
+    expect(combined).toMatch(/approved:false|approval-required/);
   });
 
   it("keeps fixture scenario coverage for release-readiness failure modes", async () => {

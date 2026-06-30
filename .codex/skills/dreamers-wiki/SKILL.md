@@ -21,11 +21,13 @@ Use this repo-local skill only from the current repository. Do not install, copy
 4. Call `dreamers_wiki_repository_context` for repository commits, changed files, diffs, and selected current files.
 5. Call `dreamers_wiki_wiki_context` for existing wiki pages, metadata files, and related pages.
 6. Call `dreamers_wiki_plan_updates` to produce structured create, update, and stale-candidate plans.
-7. Draft Markdown content in the harness from the structured plan. Do not call an MCP-side model provider.
-8. Call `dreamers_wiki_apply_edits` with the explicit wiki workspace path and approved page content. Stale candidates are marked by default.
-9. Call `dreamers_wiki_review_diff` and present both its summary and Git diff to the user.
-10. Stop before pushing unless the user gives explicit user approval after reviewing the diff.
-11. After explicit user approval, call `dreamers_wiki_push` with the explicit wiki workspace path, repository id, processed commit range, and MCP version.
+7. Draft reader-first Markdown content in the harness from the structured plan. Every planned create or update must have complete `pageContents`; do not call an MCP-side model provider.
+8. Route changes to reader-facing topic pages. Do not create source-file-derived, file-by-file, or file mirror pages such as test, config, lockfile, harness, tool, context, workspace, or implementation filenames.
+9. Reject placeholder, fallback, commit-only, and planner-boilerplate prose before applying local edits.
+10. Call `dreamers_wiki_apply_edits` with the explicit wiki workspace path and complete approved `pageContents`. Stale candidates are marked by default.
+11. Call `dreamers_wiki_review_diff` and present its summary, Git diff, and `qualityFindings` for quality review.
+12. Stop before pushing unless the user gives explicit user approval after reviewing the diff and quality review output.
+13. After explicit user approval, call `dreamers_wiki_push` with the explicit wiki workspace path, repository id, processed commit range, and MCP version.
 
 ## Approval Gates
 

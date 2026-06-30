@@ -11,8 +11,20 @@ import {
   wikiUpdatePlanSchema
 } from "./context.js";
 import { writeWikiMetadata, type WikiRunState } from "./state.js";
+import { qualityFindingForPage, type WikiQualityFinding } from "./wiki-quality.js";
 
 const literalCommitShaPattern = /^[0-9a-f]{40}$/i;
+
+type StatusEntry = {
+  status: string;
+  path: string;
+  previousPath?: string;
+};
+
+type PushBlocker = {
+  recoveryGuidance: string;
+  qualityFindings?: WikiQualityFinding[];
+};
 
 export const wikiPageContentSchema = z.object({
   path: z.string(),
@@ -76,14 +88,16 @@ export type ApplyWikiEditsResult = {
 export type WikiDiffReview = {
   summary: string[];
   diff: string;
+  qualityFindings: WikiQualityFinding[];
 };
 
 export type PushWikiChangesResult = {
-  status: "approval-required" | "pushed" | "push-failed";
+  status: "approval-required" | "blocked" | "pushed" | "push-failed";
   committed: boolean;
   pushed: boolean;
   stateAdvanced: boolean;
   recoveryGuidance?: string;
+  qualityFindings?: WikiQualityFinding[];
   state?: WikiRunState;
 };
 
@@ -100,20 +114,19 @@ export async function applyLocalWikiEdits(options: {
   pageContents?: WikiPageContent[];
   staleActions?: StalePageAction[];
 }): Promise<ApplyWikiEditsResult> {
-  validateWikiEditInputs(options.wikiPath, options.plan, options.staleActions ?? []);
-  const contentByPath = new Map((options.pageContents ?? []).map((page) => [page.path, page.content]));
+  const contentByPath = validateWikiEditInputs(options.wikiPath, options.plan, options.pageContents ?? [], options.staleActions ?? []);
   const filesChanged: string[] = [];
   const pageFilesChanged: string[] = [];
   const staleActions: ApplyWikiEditsResult["staleActions"] = [];
 
   for (const change of options.plan.pagesToCreate) {
-    await writePageChange(options.wikiPath, change, contentByPath, "create");
+    await writePageChange(options.wikiPath, change, contentByPath);
     filesChanged.push(change.path);
     pageFilesChanged.push(change.path);
   }
 
   for (const change of options.plan.pagesToUpdate) {
-    await writePageChange(options.wikiPath, change, contentByPath, "update");
+    await writePageChange(options.wikiPath, change, contentByPath);
     filesChanged.push(change.path);
     pageFilesChanged.push(change.path);
   }
@@ -152,16 +165,16 @@ export async function reviewWikiDiff(options: {
   wikiPath: string;
   runner: CommandRunner;
 }): Promise<WikiDiffReview> {
-  const status = await options.runner.run("git", ["status", "--short", "-z"], { cwd: options.wikiPath });
-  const statusEntries = parseStatusEntries(status.stdout);
+  const statusEntries = await readStatusEntries(options.runner, options.wikiPath);
   const trackedDiff = await options.runner.run("git", ["diff", "--"], { cwd: options.wikiPath });
   const untrackedDiffs = await Promise.all(statusEntries
     .filter((entry) => entry.status === "??" && entry.path.endsWith(".md"))
     .map((entry) => readUntrackedDiff(options.runner, options.wikiPath, entry.path)));
 
   return {
-    summary: statusEntries.map((entry) => `${entry.status} ${entry.path}`),
-    diff: [trackedDiff.stdout, ...untrackedDiffs].filter(Boolean).join("\n")
+    summary: statusEntries.map(formatStatusSummary),
+    diff: [trackedDiff.stdout, ...untrackedDiffs].filter(Boolean).join("\n"),
+    qualityFindings: await collectQualityFindings(options.wikiPath, statusEntries)
   };
 }
 
@@ -185,8 +198,25 @@ export async function pushWikiChanges(options: {
   }
 
   const lastProcessedCommit = requireLiteralCommitSha(options.commitRange.to, "commitRange.to");
+  const repository = parseRepositoryName(options.repository);
+  const provenance = await validateWikiRemoteProvenance({
+    runner: options.runner,
+    wikiPath: options.wikiPath,
+    repository
+  });
+  if (provenance.blocker) {
+    return blockedPushResult(provenance.blocker);
+  }
+  const statusEntries = await readStatusEntries(options.runner, options.wikiPath);
+  const qualityFindings = await collectQualityFindings(options.wikiPath, statusEntries);
+  if (qualityFindings.length > 0) {
+    return blockedPushResult({
+      qualityFindings,
+      recoveryGuidance: "Fix blocking wiki quality findings, review the local diff again, then rerun approved push."
+    });
+  }
   const state: WikiRunState = {
-    repository: options.repository,
+    repository,
     lastProcessedCommit,
     lastRunAt: options.now ?? new Date().toISOString(),
     mcpVersion: options.mcpVersion
@@ -197,13 +227,13 @@ export async function pushWikiChanges(options: {
   await options.runner.run("git", [
     "commit",
     "-m",
-    `dreamers-wiki: update ${options.repository}`,
+    `dreamers-wiki: update ${repository}`,
     "-m",
     `Commit range: ${options.commitRange.from ?? "first-run"}..${options.commitRange.to}`
   ], { cwd: options.wikiPath });
 
   try {
-    await options.runner.run("git", ["push"], { cwd: options.wikiPath });
+    await options.runner.run("git", ["push", provenance.pushRemoteUrl, `HEAD:${provenance.branch}`], { cwd: options.wikiPath });
   } catch (error) {
     await restoreAfterFailedPush(options.runner, options.wikiPath, metadataSnapshot);
     return {
@@ -227,24 +257,11 @@ export async function pushWikiChanges(options: {
 async function writePageChange(
   wikiPath: string,
   change: WikiPageChange,
-  contentByPath: Map<string, string>,
-  mode: "create" | "update"
+  contentByPath: Map<string, string>
 ) {
   const absolutePath = resolveWikiPath(wikiPath, change.path);
   await mkdir(path.dirname(absolutePath), { recursive: true });
-  const providedContent = contentByPath.get(change.path);
-
-  if (providedContent !== undefined) {
-    await writeFile(absolutePath, ensureTrailingNewline(providedContent));
-    return;
-  }
-
-  if (mode === "update") {
-    const existing = await readFileIfExists(absolutePath);
-    await writeFile(absolutePath, `${existing.trimEnd()}\n\n${renderChangeBlock(change)}`);
-  } else {
-    await writeFile(absolutePath, renderNewPage(change));
-  }
+  await writeFile(absolutePath, ensureTrailingNewline(contentByPath.get(change.path)!));
 }
 
 async function markStalePage(wikiPath: string, candidate: StaleWikiPageCandidate) {
@@ -262,14 +279,71 @@ async function markStalePage(wikiPath: string, candidate: StaleWikiPageCandidate
   ].join("\n"));
 }
 
-function validateWikiEditInputs(wikiPath: string, plan: WikiUpdatePlan, actions: StalePageAction[]) {
+function validateWikiEditInputs(
+  wikiPath: string,
+  plan: WikiUpdatePlan,
+  pageContents: WikiPageContent[],
+  actions: StalePageAction[]
+) {
   for (const change of [...plan.pagesToCreate, ...plan.pagesToUpdate]) {
     resolveWikiPath(wikiPath, change.path);
   }
   for (const candidate of plan.stalePageCandidates) {
     resolveWikiPath(wikiPath, candidate.path);
   }
+  const contentByPath = validatePageContents(wikiPath, plan, pageContents);
   validateStaleActions(wikiPath, plan.stalePageCandidates, actions);
+  return contentByPath;
+}
+
+function validatePageContents(wikiPath: string, plan: WikiUpdatePlan, pageContents: WikiPageContent[]) {
+  const plannedPaths = [...plan.pagesToCreate, ...plan.pagesToUpdate].map((change) => change.path);
+  if (plannedPaths.length === 0) {
+    if (pageContents.length > 0) {
+      throw new WikiEditError(`Page content was provided for paths not present in the create/update plan: ${pageContents.map((page) => page.path).join(", ")}`);
+    }
+    return new Map<string, string>();
+  }
+
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const page of pageContents) {
+    resolveWikiPath(wikiPath, page.path);
+    if (seen.has(page.path)) {
+      duplicates.add(page.path);
+    }
+    seen.add(page.path);
+  }
+  if (duplicates.size > 0) {
+    throw new WikiEditError(`Duplicate page content paths: ${[...duplicates].sort().join(", ")}`);
+  }
+
+  const plannedPathSet = new Set(plannedPaths);
+  const extraPaths = pageContents
+    .map((page) => page.path)
+    .filter((pagePath) => !plannedPathSet.has(pagePath));
+  if (extraPaths.length > 0) {
+    throw new WikiEditError(`Page content was provided for paths not present in the create/update plan: ${extraPaths.sort().join(", ")}`);
+  }
+
+  const contentByPath = new Map(pageContents.map((page) => [page.path, page.content]));
+  const missingPaths = plannedPaths.filter((pagePath) => !contentByPath.has(pagePath));
+  if (missingPaths.length > 0) {
+    throw new WikiEditError(`Missing page content for planned paths: ${missingPaths.sort().join(", ")}`);
+  }
+
+  for (const pagePath of plannedPaths) {
+    const content = contentByPath.get(pagePath) ?? "";
+    if (content.trim().length === 0) {
+      throw new WikiEditError(`Page content has empty content for planned path: ${pagePath}`);
+    }
+    const finding = qualityFindingForPage(pagePath, content);
+    if (finding) {
+      throw new WikiEditError(`Page content quality blocker for ${pagePath}: ${finding.message}`);
+    }
+  }
+
+  return contentByPath;
 }
 
 function validateStaleActions(wikiPath: string, candidates: StaleWikiPageCandidate[], actions: StalePageAction[]) {
@@ -300,6 +374,131 @@ async function readUntrackedDiff(runner: CommandRunner, wikiPath: string, filePa
     }
     throw error;
   }
+}
+
+async function readStatusEntries(runner: CommandRunner, wikiPath: string) {
+  const status = await runner.run("git", ["status", "--short", "-z"], { cwd: wikiPath });
+  return parseStatusEntries(status.stdout);
+}
+
+async function collectQualityFindings(
+  wikiPath: string,
+  statusEntries: StatusEntry[]
+) {
+  const findings: WikiQualityFinding[] = [];
+  for (const pagePath of changedMarkdownPaths(statusEntries)) {
+    const content = await readFileIfExists(resolveWikiPath(wikiPath, pagePath));
+    if (content.length === 0) {
+      continue;
+    }
+    const finding = qualityFindingForPage(pagePath, content);
+    if (finding) {
+      findings.push(finding);
+    }
+  }
+  return findings;
+}
+
+function changedMarkdownPaths(statusEntries: StatusEntry[]) {
+  return [...new Set(statusEntries
+    .filter((entry) => !entry.status.startsWith("D"))
+    .map((entry) => entry.path)
+    .filter((pagePath) => pagePath.endsWith(".md")))]
+    .sort();
+}
+
+async function validateWikiRemoteProvenance(options: {
+  runner: CommandRunner;
+  wikiPath: string;
+  repository: string;
+}): Promise<{ blocker?: PushBlocker; pushRemoteUrl: string; branch: string }> {
+  let pushRemoteUrl;
+  let branch;
+  try {
+    pushRemoteUrl = (await options.runner.run("git", ["remote", "get-url", "--push", "origin"], { cwd: options.wikiPath })).stdout.trim();
+    branch = await readVerifiedWikiBranch(options.runner, options.wikiPath);
+  } catch (error) {
+    return {
+      pushRemoteUrl: "",
+      branch: "",
+      blocker: {
+        recoveryGuidance: `Cannot verify wiki remote provenance before push. ${commandFailureMessage(error)}`
+      }
+    };
+  }
+
+  const actualRepository = repositoryFromGitHubWikiRemote(pushRemoteUrl);
+  if (!actualRepository || actualRepository !== options.repository) {
+    return {
+      pushRemoteUrl,
+      branch,
+      blocker: {
+        recoveryGuidance: `The wiki remote ${pushRemoteUrl} does not match requested repository ${options.repository}; use the matching wiki checkout before approving push.`
+      }
+    };
+  }
+
+  return { pushRemoteUrl, branch };
+}
+
+function repositoryFromGitHubWikiRemote(remoteUrl: string) {
+  const trimmed = remoteUrl.trim();
+  const patterns = [
+    /^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/,
+    /^https:\/\/github\.com\/([^/]+)\/(.+?)(?:\.git)?$/,
+    /^ssh:\/\/git@github\.com\/([^/]+)\/(.+?)(?:\.git)?$/
+  ];
+
+  for (const pattern of patterns) {
+    const match = trimmed.match(pattern);
+    if (match?.[1] && match[2]) {
+      const repo = match[2].replace(/\.git$/, "");
+      if (!repo.endsWith(".wiki")) {
+        return null;
+      }
+      return normalizeRepository(`${match[1]}/${repo}`);
+    }
+  }
+  return null;
+}
+
+function parseRepositoryName(repository: string) {
+  const match = repository.trim().match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/);
+  if (!match?.[1] || !match[2] || match[2].endsWith(".wiki")) {
+    throw new WikiEditError(`repository must be in owner/repo form: ${repository}`);
+  }
+  return `${match[1]}/${match[2]}`.toLowerCase();
+}
+
+function normalizeRepository(repository: string) {
+  const [owner = "", repo = ""] = repository.trim().replace(/\.git$/, "").split("/");
+  return `${owner}/${repo.replace(/\.wiki$/, "")}`.toLowerCase();
+}
+
+function blockedPushResult(blocker: PushBlocker): PushWikiChangesResult {
+  return {
+    status: "blocked",
+    committed: false,
+    pushed: false,
+    stateAdvanced: false,
+    ...(blocker.qualityFindings === undefined ? {} : { qualityFindings: blocker.qualityFindings }),
+    recoveryGuidance: blocker.recoveryGuidance
+  };
+}
+
+async function readVerifiedWikiBranch(runner: CommandRunner, wikiPath: string) {
+  let result;
+  try {
+    result = await runner.run("git", ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], { cwd: wikiPath });
+  } catch (error) {
+    throw new WikiEditError(`Wiki checkout must track an origin branch before push. ${commandFailureMessage(error)}`);
+  }
+  const upstream = result.stdout.trim();
+  const branch = upstream.replace(/^origin\//, "");
+  if (!branch) {
+    throw new WikiEditError("Wiki checkout must track an origin branch before push.");
+  }
+  return branch;
 }
 
 async function snapshotMetadata(wikiPath: string) {
@@ -341,7 +540,7 @@ async function restoreAfterFailedPush(
 
 function parseStatusEntries(statusOutput: string) {
   const fields = statusOutput.split("\0").filter(Boolean);
-  const entries: Array<{ status: string; path: string }> = [];
+  const entries: StatusEntry[] = [];
   for (let index = 0; index < fields.length; index += 1) {
     const field = fields[index] ?? "";
     const status = field.slice(0, 2);
@@ -350,7 +549,8 @@ function parseStatusEntries(statusOutput: string) {
       const sourcePath = fields[index + 1];
       entries.push({
         status,
-        path: sourcePath ? `${sourcePath} -> ${destinationPath}` : destinationPath
+        path: destinationPath,
+        ...(sourcePath === undefined ? {} : { previousPath: sourcePath })
       });
       index += 1;
       continue;
@@ -360,33 +560,17 @@ function parseStatusEntries(statusOutput: string) {
   return entries;
 }
 
+function formatStatusSummary(entry: StatusEntry) {
+  return entry.previousPath
+    ? `${entry.status} ${entry.previousPath} -> ${entry.path}`
+    : `${entry.status} ${entry.path}`;
+}
+
 function requireLiteralCommitSha(value: string, field: string) {
   if (!literalCommitShaPattern.test(value)) {
     throw new WikiEditError(`${field} must be a literal 40-character commit SHA before wiki state can advance.`);
   }
   return value;
-}
-
-function renderNewPage(change: WikiPageChange) {
-  return [
-    `# ${titleFromWikiPath(change.path)}`,
-    "",
-    change.suggestedPurpose,
-    "",
-    renderChangeBlock(change)
-  ].join("\n");
-}
-
-function renderChangeBlock(change: WikiPageChange) {
-  return [
-    "## Dreamers Wiki Update",
-    "",
-    `Reason: ${change.reason}`,
-    "",
-    "Source commits:",
-    ...change.sourceCommits.map((commit) => `- ${commit}`),
-    ""
-  ].join("\n");
 }
 
 function summarizeAppliedChanges(filesChanged: string[], staleActions: ApplyWikiEditsResult["staleActions"]) {
@@ -417,10 +601,6 @@ function resolveWikiPath(wikiPath: string, relativePath: string) {
     throw new WikiEditError(`Unsafe wiki path: ${relativePath}`);
   }
   return absolutePath;
-}
-
-function titleFromWikiPath(filePath: string) {
-  return path.basename(filePath, path.extname(filePath)).replace(/-/g, " ");
 }
 
 function ensureTrailingNewline(content: string) {

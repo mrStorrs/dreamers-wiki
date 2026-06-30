@@ -3,9 +3,11 @@ import { z } from "zod";
 import {
   changedFileSchema,
   commitRangeSchema,
+  diffSummarySchema,
   gatherRepositoryContext,
   gatherWikiContext,
   planWikiUpdates,
+  repositoryFileSchema,
   wikiPageSummarySchema
 } from "./context.js";
 import { createCommandRunner } from "./command-runner.js";
@@ -94,6 +96,8 @@ export function registerTools(server: ToolRegistrar, cwd = process.cwd()) {
         commitRange: parsedInput.repositoryContext.commitRange,
         commits: parsedInput.repositoryContext.commits,
         changedFiles: parsedInput.repositoryContext.changedFiles,
+        diffSummaries: parsedInput.repositoryContext.diffSummaries,
+        selectedFiles: parsedInput.repositoryContext.selectedFiles,
         pages: parsedInput.wikiContext.pages
       }));
     }
@@ -180,25 +184,27 @@ export async function createStatusResponse(cwd = process.cwd()): Promise<McpTool
 const repositoryContextSchema = z.object({
   commitRange: commitRangeSchema,
   commits: z.array(projectCommitSchema),
-  changedFiles: z.array(changedFileSchema)
+  changedFiles: z.array(changedFileSchema),
+  diffSummaries: z.array(diffSummarySchema).optional().default([]),
+  selectedFiles: z.array(repositoryFileSchema).optional().default([])
 }).passthrough();
 
 const wikiContextSchema = z.object({
   pages: z.array(wikiPageSummarySchema)
 }).passthrough();
 
-const repositoryContextInputSchema = z.object({
+export const repositoryContextInputSchema = z.object({
   projectPath: z.string().optional(),
   from: z.string().nullable().optional(),
   to: z.string().optional()
 });
 
-const wikiContextInputSchema = z.object({
+export const wikiContextInputSchema = z.object({
   wikiPath: z.string().optional(),
   changedFiles: z.array(changedFileSchema).optional()
 });
 
-const planUpdatesInputSchema = z.object({
+export const planUpdatesInputSchema = z.object({
   repositoryContext: repositoryContextSchema,
   wikiContext: wikiContextSchema
 });
